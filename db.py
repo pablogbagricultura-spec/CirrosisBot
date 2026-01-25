@@ -431,7 +431,6 @@ def deactivate_person(person_id: int):
             cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
             conn.commit()
 
-
 # -------------------------
 # Rankings detallados (por bebida)
 # -------------------------
