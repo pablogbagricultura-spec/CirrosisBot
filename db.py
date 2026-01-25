@@ -79,7 +79,7 @@ def init_db():
             );
             """)
 
-            # EVENTOS (versión mínima; migramos después)
+            # EVENTOS (mínimo)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS drink_events (
               id SERIAL PRIMARY KEY,
@@ -91,7 +91,7 @@ def init_db():
             );
             """)
 
-            # MIGRACIONES SUAVES (para tablas antiguas)
+            # MIGRACIONES SUAVES (por si existía de antes)
             cur.execute("""
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;
 
@@ -104,7 +104,7 @@ def init_db():
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_by_telegram_user_id BIGINT;
             """)
 
-            # ÍNDICES (crear después de tener columnas)
+            # ÍNDICES
             cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_person_recent
               ON drink_events(person_id, is_void, created_at DESC);
@@ -282,3 +282,42 @@ def report_year(year_start: int):
             ORDER BY euros DESC, litros DESC, unidades DESC;
             """, (year_start,))
             return cur.fetchall()
+
+# -------------------------
+# ADMIN (opción B)
+# -------------------------
+
+def is_admin(telegram_user_id: int) -> bool:
+    # Admin por persona asignada (robusto si cambias de dispositivo)
+    p = get_assigned_person(telegram_user_id)
+    return bool(p and p["name"] == "Pablo")
+
+def add_person(name: str) -> bool:
+    name = name.strip()
+    if not name:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO persons(name, status) VALUES (%s, 'NEW') ON CONFLICT DO NOTHING;",
+                (name,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+def list_active_persons():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name
+            FROM persons
+            WHERE status='ACTIVE'
+            ORDER BY name;
+            """)
+            return cur.fetchall()
+
+def deactivate_person(person_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
+            conn.commit()

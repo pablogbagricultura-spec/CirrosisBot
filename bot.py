@@ -6,7 +6,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from db import (
     init_db, get_assigned_person, list_available_persons, assign_person,
     list_drink_types, insert_event, list_last_events, void_event,
-    beer_year_start_for, list_years_with_data, report_year
+    list_years_with_data, report_year,
+    is_admin, add_person, list_active_persons, deactivate_person
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -16,6 +17,7 @@ CB_PICK_PERSON = "pick_person:"
 CB_MENU_ADD = "menu:add"
 CB_MENU_REPORT = "menu:report"
 CB_MENU_UNDO = "menu:undo"
+CB_MENU_ADMIN = "menu:admin"
 
 CB_CAT = "cat:"          # cat:BEER / cat:OTHER
 CB_TYPE = "type:"        # type:<id>
@@ -28,15 +30,22 @@ CB_UNDO_CANCEL = "undo_no"
 
 CB_YEAR = "year:"        # year:<year_start>
 
+CB_ADMIN_ADD = "admin:add"
+CB_ADMIN_REMOVE = "admin:remove"
+CB_ADMIN_REMOVE_ID = "admin:remove:"  # admin:remove:<id>
+
 def kb(rows):
     return InlineKeyboardMarkup(rows)
 
-def menu_kb():
-    return kb([
+def menu_kb(is_admin_user: bool):
+    rows = [
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
         [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
         [InlineKeyboardButton("↩️ Deshacer", callback_data=CB_MENU_UNDO)],
-    ])
+    ]
+    if is_admin_user:
+        rows.append([InlineKeyboardButton("⚙️ Administración", callback_data=CB_MENU_ADMIN)])
+    return kb(rows)
 
 def persons_kb(persons):
     return kb([[InlineKeyboardButton(p["name"], callback_data=f"{CB_PICK_PERSON}{p['id']}")] for p in persons])
@@ -92,6 +101,18 @@ def years_kb(years):
     rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
 
+def admin_kb():
+    return kb([
+        [InlineKeyboardButton("➕ Añadir persona", callback_data=CB_ADMIN_ADD)],
+        [InlineKeyboardButton("➖ Desactivar persona", callback_data=CB_ADMIN_REMOVE)],
+        [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
+    ])
+
+def admin_remove_kb(persons):
+    rows = [[InlineKeyboardButton(p["name"], callback_data=f"{CB_ADMIN_REMOVE_ID}{p['id']}")] for p in persons]
+    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)])
+    return kb(rows)
+
 def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None = None):
     context.user_data["state"] = state
     if data is not None:
@@ -107,7 +128,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if person:
         await update.message.reply_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(),
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
         set_state(context, "MENU", {})
         return
@@ -130,12 +151,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     state, sdata = get_state(context)
 
-    # --- BACKS ---
+    # -------- BACKS --------
     if data == "back:menu":
         person = get_assigned_person(tg_id)
         await q.edit_message_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(),
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
         set_state(context, "MENU", {})
         return
@@ -161,7 +182,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADD_DATE", sdata)
         return
 
-    # --- REGISTRO PERSONA ---
+    # -------- REGISTRO PERSONA --------
     if data.startswith(CB_PICK_PERSON):
         person_id = int(data.split(":", 1)[1])
         status, person = assign_person(tg_id, person_id)
@@ -170,7 +191,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"✅ Perfecto. Te has registrado como {person['name']}.")
             await q.message.reply_text(
                 f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-                reply_markup=menu_kb(),
+                reply_markup=menu_kb(is_admin(tg_id)),
             )
             set_state(context, "MENU", {})
             return
@@ -182,7 +203,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⚠️ Esa plaza ya fue ocupada. Elige otra:", reply_markup=persons_kb(available))
         return
 
-    # --- MENÚ ---
+    # -------- MENÚ --------
     if data == CB_MENU_ADD:
         await q.edit_message_text("¿Qué vas a añadir?", reply_markup=categories_kb())
         set_state(context, "ADD_CAT", {})
@@ -192,7 +213,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         person = get_assigned_person(tg_id)
         events = list_last_events(person["id"], 3)
         if not events:
-            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb())
+            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
             set_state(context, "MENU", {})
             return
         await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
@@ -202,30 +223,67 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == CB_MENU_REPORT:
         years = list_years_with_data()
         if not years:
-            await q.edit_message_text("Aún no hay datos para informes 🙂", reply_markup=menu_kb())
+            await q.edit_message_text("Aún no hay datos para informes 🙂", reply_markup=menu_kb(is_admin(tg_id)))
             set_state(context, "MENU", {})
             return
-        # Bonito: muestra años disponibles (solo si hay datos)
         await q.edit_message_text("¿Qué año cervecero quieres ver?", reply_markup=years_kb(years))
         set_state(context, "REPORT_PICK_YEAR", {})
         return
 
-    # --- INFORME POR AÑO ---
+    # -------- ADMIN --------
+    if data == CB_MENU_ADMIN:
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.", reply_markup=menu_kb(False))
+            return
+        await q.edit_message_text("⚙️ Administración\n\n¿Qué quieres hacer?", reply_markup=admin_kb())
+        set_state(context, "ADMIN", {})
+        return
+
+    if data == CB_ADMIN_ADD:
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        await q.edit_message_text("Escribe el nombre de la nueva persona:")
+        set_state(context, "ADMIN_ADD", {})
+        return
+
+    if data == CB_ADMIN_REMOVE:
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        persons = list_active_persons()
+        if not persons:
+            await q.edit_message_text("No hay personas activas para desactivar.", reply_markup=admin_kb())
+            return
+        await q.edit_message_text("¿A quién quieres desactivar?", reply_markup=admin_remove_kb(persons))
+        set_state(context, "ADMIN_REMOVE", {})
+        return
+
+    if data.startswith(CB_ADMIN_REMOVE_ID):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        pid = int(data.split(":")[2])
+        deactivate_person(pid)
+        await q.edit_message_text("✅ Persona desactivada.", reply_markup=menu_kb(True))
+        set_state(context, "MENU", {})
+        return
+
+    # -------- INFORME POR AÑO --------
     if data.startswith(CB_YEAR):
         y = int(data.split(":", 1)[1])
         rows = report_year(y)
         lines = [f"📊 Informe {y}-{y+1}"]
         for r in rows:
-            # En informes sí mostramos litros y euros (acordado)
             unidades = int(r["unidades"])
             litros = float(r["litros"])
             euros = float(r["euros"])
             lines.append(f"• {r['name']}: {unidades} uds | {litros:.2f} L | {euros:.2f} €")
-        await q.edit_message_text("\n".join(lines), reply_markup=menu_kb())
+        await q.edit_message_text("\n".join(lines), reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
         return
 
-    # --- AÑADIR: CATEGORÍA ---
+    # -------- AÑADIR: CATEGORÍA --------
     if data.startswith(CB_CAT):
         cat = data.split(":", 1)[1]
         types = list_drink_types(cat)
@@ -234,14 +292,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADD_TYPE", {"cat": cat})
         return
 
-    # --- AÑADIR: TIPO ---
+    # -------- AÑADIR: TIPO --------
     if data.startswith(CB_TYPE):
         drink_type_id = int(data.split(":", 1)[1])
         await q.edit_message_text("¿Cuántas has tomado?", reply_markup=qty_kb())
         set_state(context, "ADD_QTY", {**sdata, "drink_type_id": drink_type_id})
         return
 
-    # --- AÑADIR: CANTIDAD ---
+    # -------- AÑADIR: CANTIDAD --------
     if data.startswith(CB_QTY):
         v = data.split(":", 1)[1]
         if v == "more":
@@ -254,7 +312,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADD_DATE", {**sdata, "qty": qty})
         return
 
-    # --- AÑADIR: FECHA ---
+    # -------- AÑADIR: FECHA --------
     if data.startswith(CB_DATE):
         which = data.split(":", 1)[1]
         if which == "other":
@@ -274,11 +332,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        await q.edit_message_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb())
+        await q.edit_message_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
         return
 
-    # --- DESHACER ---
+    # -------- DESHACER --------
     if data.startswith(CB_UNDO_PICK):
         event_id = int(data.split(":", 1)[1])
         await q.edit_message_text("¿Seguro que quieres eliminar esta entrada?", reply_markup=undo_confirm_kb(event_id))
@@ -289,22 +347,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event_id = int(data.split(":", 1)[1])
         person = get_assigned_person(tg_id)
         ok = void_event(person["id"], tg_id, event_id)
-        await q.edit_message_text("✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.", reply_markup=menu_kb())
+        await q.edit_message_text(
+            "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
+            reply_markup=menu_kb(is_admin(tg_id)),
+        )
         set_state(context, "MENU", {})
         return
 
     if data == CB_UNDO_CANCEL:
         person = get_assigned_person(tg_id)
-        await q.edit_message_text(f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?", reply_markup=menu_kb())
+        await q.edit_message_text(
+            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
+            reply_markup=menu_kb(is_admin(tg_id)),
+        )
         set_state(context, "MENU", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Para cantidades manuales y fechas manuales
     if not update.message:
         return
+
     text = (update.message.text or "").strip()
     state, sdata = get_state(context)
+    tg_id = update.effective_user.id
 
     if state == "ADD_QTY_MANUAL":
         try:
@@ -314,6 +379,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("Número inválido. Escribe un entero mayor que 0 (ej: 7).")
             return
+
         await update.message.reply_text("¿Cuándo se bebió?", reply_markup=date_kb())
         set_state(context, "ADD_DATE", {**sdata, "qty": qty})
         return
@@ -325,17 +391,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Formato inválido. Usa YYYY-MM-DD (ej: 2026-01-25).")
             return
 
-        person = get_assigned_person(update.effective_user.id)
+        person = get_assigned_person(tg_id)
         insert_event(
             person_id=person["id"],
-            telegram_user_id=update.effective_user.id,
+            telegram_user_id=tg_id,
             drink_type_id=sdata["drink_type_id"],
             quantity=sdata["qty"],
             consumed_at=consumed_at,
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        await update.message.reply_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb())
+        await update.message.reply_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        set_state(context, "MENU", {})
+        return
+
+    # ADMIN: añadir persona por texto
+    if state == "ADMIN_ADD":
+        if not is_admin(tg_id):
+            await update.message.reply_text("🚫 No tienes permisos.")
+            set_state(context, "MENU", {})
+            return
+
+        ok = add_person(text)
+        if ok:
+            await update.message.reply_text(f"✅ '{text}' añadido como nueva persona.", reply_markup=menu_kb(True))
+        else:
+            await update.message.reply_text("⚠️ No se pudo añadir (¿ya existe?).", reply_markup=menu_kb(True))
         set_state(context, "MENU", {})
         return
 
