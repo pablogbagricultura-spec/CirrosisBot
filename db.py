@@ -316,34 +316,6 @@ def report_year(year_start: int):
             """, (year_start,))
             return cur.fetchall()
 
-def report_year_by_drink_for_person(person_id: int, year_start: int):
-    """
-    Desglose por tipo de bebida para UNA persona y un año cervecero.
-    Solo incluye consumos > 0 y eventos no anulados.
-    Devuelve: category, label, unidades, litros, euros
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT
-                dt.category AS category,
-                dt.label    AS label,
-                SUM(e.quantity) AS unidades,
-                COALESCE(SUM(e.volume_liters_total), 0) AS litros,
-                COALESCE(SUM(e.price_eur_total), 0) AS euros
-            FROM drink_events e
-            JOIN drink_types dt ON dt.id = e.drink_type_id
-            WHERE e.person_id = %s
-              AND e.year_start = %s
-              AND e.is_void = FALSE
-            GROUP BY dt.category, dt.label
-            HAVING SUM(e.quantity) > 0
-            ORDER BY
-                dt.category ASC,
-                euros DESC, litros DESC, unidades DESC, dt.label ASC;
-            """, (person_id, year_start))
-            return cur.fetchall()
-
 def get_person_year_totals(person_id: int, year_start: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -458,3 +430,95 @@ def deactivate_person(person_id: int):
         with conn.cursor() as cur:
             cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
             conn.commit()
+
+# -------------------------
+# Rankings detallados (por bebida)
+# -------------------------
+
+def report_year_by_drink_for_person(person_id: int, year_start: int):
+    """
+    Desglose por tipo de bebida para UNA persona y un año cervecero.
+    Solo incluye consumos > 0 y eventos no anulados.
+    Devuelve: category, label, unidades, litros, euros, unit_volume_liters
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+                dt.category AS category,
+                dt.label    AS label,
+                SUM(e.quantity) AS unidades,
+                COALESCE(SUM(e.volume_liters_total), 0) AS litros,
+                COALESCE(SUM(e.price_eur_total), 0) AS euros,
+                MAX(dt.volume_liters) AS unit_volume_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.person_id = %s
+              AND e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.category, dt.label
+            HAVING SUM(e.quantity) > 0
+            ORDER BY
+                dt.category ASC,
+                euros DESC, litros DESC, unidades DESC, dt.label ASC;
+            """, (person_id, year_start))
+            return cur.fetchall()
+
+
+def ranking_total_liters(year_start: int):
+    """
+    Ranking público total por litros (suma de todas las bebidas con volumen).
+    Solo incluye personas con litros > 0.
+    Devuelve: name, litros
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+                p.name AS name,
+                COALESCE(SUM(e.volume_liters_total), 0) AS litros
+            FROM persons p
+            JOIN drink_events e
+              ON e.person_id = p.id
+             AND e.year_start = %s
+             AND e.is_void = FALSE
+            GROUP BY p.name
+            HAVING COALESCE(SUM(e.volume_liters_total), 0) > 0
+            ORDER BY litros DESC, p.name ASC;
+            """, (year_start,))
+            return cur.fetchall()
+
+
+def ranking_by_drink(year_start: int):
+    """
+    Ranking público por cada tipo de bebida.
+    Solo incluye bebidas con consumo > 0 (y eventos no anulados).
+    Devuelve filas para agrupar en el bot:
+      drink_type_id, category, label, unit_volume_liters, name, unidades, litros
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+                dt.id AS drink_type_id,
+                dt.category AS category,
+                dt.label AS label,
+                dt.volume_liters AS unit_volume_liters,
+                p.name AS name,
+                SUM(e.quantity) AS unidades,
+                COALESCE(SUM(e.volume_liters_total), 0) AS litros
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            JOIN persons p ON p.id = e.person_id
+            WHERE e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.id, dt.category, dt.label, dt.volume_liters, p.name
+            HAVING SUM(e.quantity) > 0
+            ORDER BY
+                dt.category ASC,
+                dt.label ASC,
+                COALESCE(SUM(e.volume_liters_total), 0) DESC,
+                SUM(e.quantity) DESC,
+                p.name ASC;
+            """, (year_start,))
+            return cur.fetchall()
