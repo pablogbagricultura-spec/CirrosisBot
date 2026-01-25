@@ -316,6 +316,34 @@ def report_year(year_start: int):
             """, (year_start,))
             return cur.fetchall()
 
+def report_year_by_drink_for_person(person_id: int, year_start: int):
+    """
+    Desglose por tipo de bebida para UNA persona y un año cervecero.
+    Solo incluye consumos > 0 y eventos no anulados.
+    Devuelve: category, label, unidades, litros, euros
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+                dt.category AS category,
+                dt.label    AS label,
+                SUM(e.quantity) AS unidades,
+                COALESCE(SUM(e.volume_liters_total), 0) AS litros,
+                COALESCE(SUM(e.price_eur_total), 0) AS euros
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.person_id = %s
+              AND e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.category, dt.label
+            HAVING SUM(e.quantity) > 0
+            ORDER BY
+                dt.category ASC,
+                euros DESC, litros DESC, unidades DESC, dt.label ASC;
+            """, (person_id, year_start))
+            return cur.fetchall()
+
 def get_person_year_totals(person_id: int, year_start: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
