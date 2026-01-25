@@ -34,8 +34,10 @@ CB_ADMIN_ADD = "admin:add"
 CB_ADMIN_REMOVE = "admin:remove"
 CB_ADMIN_REMOVE_ID = "admin:remove:"  # admin:remove:<id>
 
+
 def kb(rows):
     return InlineKeyboardMarkup(rows)
+
 
 def menu_kb(is_admin_user: bool):
     rows = [
@@ -47,8 +49,10 @@ def menu_kb(is_admin_user: bool):
         rows.append([InlineKeyboardButton("⚙️ Administración", callback_data=CB_MENU_ADMIN)])
     return kb(rows)
 
+
 def persons_kb(persons):
     return kb([[InlineKeyboardButton(p["name"], callback_data=f"{CB_PICK_PERSON}{p['id']}")] for p in persons])
+
 
 def categories_kb():
     return kb([
@@ -57,10 +61,12 @@ def categories_kb():
         [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
     ])
 
+
 def types_kb(types, back_to="cat"):
     rows = [[InlineKeyboardButton(t["label"], callback_data=f"{CB_TYPE}{t['id']}")] for t in types]
     rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=f"back:{back_to}")])
     return kb(rows)
+
 
 def qty_kb():
     return kb([
@@ -73,6 +79,7 @@ def qty_kb():
         [InlineKeyboardButton("⬅️ Atrás", callback_data="back:type")],
     ])
 
+
 def date_kb():
     return kb([
         [InlineKeyboardButton("Hoy", callback_data=f"{CB_DATE}today")],
@@ -80,6 +87,7 @@ def date_kb():
         [InlineKeyboardButton("Otra fecha", callback_data=f"{CB_DATE}other")],
         [InlineKeyboardButton("⬅️ Atrás", callback_data="back:qty")],
     ])
+
 
 def undo_list_kb(events):
     rows = []
@@ -90,16 +98,19 @@ def undo_list_kb(events):
     rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
 
+
 def undo_confirm_kb(event_id: int):
     return kb([
         [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_UNDO_CONFIRM}{event_id}")],
         [InlineKeyboardButton("❌ Cancelar", callback_data=CB_UNDO_CANCEL)],
     ])
 
+
 def years_kb(years):
     rows = [[InlineKeyboardButton(f"{y}-{y+1}", callback_data=f"{CB_YEAR}{y}")] for y in years]
     rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
+
 
 def admin_kb():
     return kb([
@@ -108,18 +119,22 @@ def admin_kb():
         [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
     ])
 
+
 def admin_remove_kb(persons):
     rows = [[InlineKeyboardButton(p["name"], callback_data=f"{CB_ADMIN_REMOVE_ID}{p['id']}")] for p in persons]
     rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)])
     return kb(rows)
+
 
 def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None = None):
     context.user_data["state"] = state
     if data is not None:
         context.user_data["data"] = data
 
+
 def get_state(context: ContextTypes.DEFAULT_TYPE):
     return context.user_data.get("state"), context.user_data.get("data", {})
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
@@ -143,6 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=persons_kb(available),
     )
     set_state(context, "PICK_PERSON", {})
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -363,6 +379,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "MENU", {})
         return
 
+    # ------------------------------------------------------------------
+    # FALLBACK ANTI-BOTONES-VIEJOS
+    # Si alguien pulsa un botón antiguo (callback_data desconocido),
+    # no dejamos al usuario colgado.
+    # ------------------------------------------------------------------
+    try:
+        await q.edit_message_text("⚠️ Ese botón ya no es válido.\nEscribe /start para recargar el menú.")
+    except Exception:
+        # Si el mensaje no se puede editar (por ejemplo, muy antiguo),
+        # respondemos con un mensaje nuevo.
+        await q.message.reply_text("⚠️ Ese botón ya no es válido.\nEscribe /start para recargar el menú.")
+    set_state(context, "MENU", {})
+    return
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -422,6 +453,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Escribe /start para ver el menú.")
 
+
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -429,6 +461,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()

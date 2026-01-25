@@ -8,30 +8,33 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 PERSONS_SEED = ["Pablo", "Javi", "Jesus", "Fer", "Cuco", "Oli", "Emilio"]
 
 DRINKS_SEED = [
-    ("CORTAITA","Cortaita","BEER",0.25,1.65),
-    ("CANA","Caña","BEER",0.25,1.50),
-    ("JARRITA","Jarrita","BEER",0.25,2.00),
-    ("BOTELLIN","Botellín","BEER",0.20,1.25),
-    ("TERCIO","Tercio","BEER",0.33,2.25),
-    ("LATA33","Lata 33","BEER",0.33,0.60),
-    ("JARRA","Jarra","BEER",0.40,3.00),
-    ("TANQUE","Tanque","BEER",0.50,3.50),
-    ("LATA50","Lata 50","BEER",0.50,1.00),
-    ("LITRO","Litro","BEER",1.00,2.00),
-    ("CUBATA","Cubata","OTHER",None,6.50),
-    ("PIEDRA","Piedra","OTHER",None,6.00),
-    ("CHUPITO","Chupito","OTHER",None,2.00),
+    ("CORTAITA", "Cortaita", "BEER", 0.25, 1.65),
+    ("CANA", "Caña", "BEER", 0.25, 1.50),
+    ("JARRITA", "Jarrita", "BEER", 0.25, 2.00),
+    ("BOTELLIN", "Botellín", "BEER", 0.20, 1.25),
+    ("TERCIO", "Tercio", "BEER", 0.33, 2.25),
+    ("LATA33", "Lata 33", "BEER", 0.33, 0.60),
+    ("JARRA", "Jarra", "BEER", 0.40, 3.00),
+    ("TANQUE", "Tanque", "BEER", 0.50, 3.50),
+    ("LATA50", "Lata 50", "BEER", 0.50, 1.00),
+    ("LITRO", "Litro", "BEER", 1.00, 2.00),
+    ("CUBATA", "Cubata", "OTHER", None, 6.50),
+    ("PIEDRA", "Piedra", "OTHER", None, 6.00),
+    ("CHUPITO", "Chupito", "OTHER", None, 2.00),
 ]
+
 
 def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL no está configurada en Railway (Variables).")
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
+
 def beer_year_start_for(d: dt.date) -> int:
     # Año cervecero: 7 enero -> 6 enero
     jan7 = dt.date(d.year, 1, 7)
     return d.year if d >= jan7 else (d.year - 1)
+
 
 def init_db():
     with get_conn() as conn:
@@ -92,17 +95,13 @@ def init_db():
             """)
 
             # MIGRACIONES SUAVES (por si existía de antes)
-            cur.execute("""
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;
-
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS year_start INT;
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS volume_liters_total NUMERIC(10,3);
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS price_eur_total NUMERIC(10,2);
-
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS is_void BOOLEAN NOT NULL DEFAULT FALSE;
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
-            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_by_telegram_user_id BIGINT;
-            """)
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS year_start INT;")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS volume_liters_total NUMERIC(10,3);")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS price_eur_total NUMERIC(10,2);")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS is_void BOOLEAN NOT NULL DEFAULT FALSE;")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;")
+            cur.execute("ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_by_telegram_user_id BIGINT;")
 
             # ÍNDICES
             cur.execute("""
@@ -135,6 +134,7 @@ def init_db():
                 """, (code, label, cat, vol, price))
             conn.commit()
 
+
 def get_assigned_person(telegram_user_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -147,6 +147,7 @@ def get_assigned_person(telegram_user_id: int):
             """, (telegram_user_id,))
             return cur.fetchone()
 
+
 def list_available_persons():
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -157,6 +158,7 @@ def list_available_persons():
             ORDER BY name;
             """)
             return cur.fetchall()
+
 
 def assign_person(telegram_user_id: int, person_id: int):
     existing = get_assigned_person(telegram_user_id)
@@ -186,6 +188,7 @@ def assign_person(telegram_user_id: int, person_id: int):
                 return ("ALREADY", existing2)
             return ("TAKEN", None)
 
+
 def list_drink_types(category: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -197,6 +200,7 @@ def list_drink_types(category: str):
             """, (category,))
             return cur.fetchall()
 
+
 def get_drink_type(drink_type_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -206,6 +210,7 @@ def get_drink_type(drink_type_id: int):
             WHERE id=%s;
             """, (drink_type_id,))
             return cur.fetchone()
+
 
 def insert_event(person_id: int, telegram_user_id: int, drink_type_id: int, quantity: int, consumed_at: dt.date):
     t = get_drink_type(drink_type_id)
@@ -230,6 +235,7 @@ def insert_event(person_id: int, telegram_user_id: int, drink_type_id: int, quan
             """, (person_id, telegram_user_id, drink_type_id, quantity, consumed_at, year_start, volume_total, price_total))
             conn.commit()
 
+
 def list_last_events(person_id: int, limit: int = 3):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -242,6 +248,7 @@ def list_last_events(person_id: int, limit: int = 3):
             LIMIT %s;
             """, (person_id, limit))
             return cur.fetchall()
+
 
 def void_event(person_id: int, telegram_user_id: int, event_id: int):
     with get_conn() as conn:
@@ -256,68 +263,6 @@ def void_event(person_id: int, telegram_user_id: int, event_id: int):
             conn.commit()
             return row is not None
 
+
 def list_years_with_data():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT DISTINCT year_start
-            FROM drink_events
-            WHERE is_void=FALSE AND year_start IS NOT NULL
-            ORDER BY year_start DESC;
-            """)
-            return [r["year_start"] for r in cur.fetchall()]
-
-def report_year(year_start: int):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT p.name,
-                   COALESCE(SUM(e.quantity),0) AS unidades,
-                   COALESCE(SUM(e.volume_liters_total),0) AS litros,
-                   COALESCE(SUM(e.price_eur_total),0) AS euros
-            FROM persons p
-            LEFT JOIN drink_events e
-              ON e.person_id=p.id AND e.year_start=%s AND e.is_void=FALSE
-            GROUP BY p.name
-            ORDER BY euros DESC, litros DESC, unidades DESC;
-            """, (year_start,))
-            return cur.fetchall()
-
-# -------------------------
-# ADMIN (opción B)
-# -------------------------
-
-def is_admin(telegram_user_id: int) -> bool:
-    # Admin por persona asignada (robusto si cambias de dispositivo)
-    p = get_assigned_person(telegram_user_id)
-    return bool(p and p["name"] == "Pablo")
-
-def add_person(name: str) -> bool:
-    name = name.strip()
-    if not name:
-        return False
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO persons(name, status) VALUES (%s, 'NEW') ON CONFLICT DO NOTHING;",
-                (name,)
-            )
-            conn.commit()
-            return cur.rowcount > 0
-
-def list_active_persons():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT id, name
-            FROM persons
-            WHERE status='ACTIVE'
-            ORDER BY name;
-            """)
-            return cur.fetchall()
-
-def deactivate_person(person_id: int):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
-            conn.commit()
+    with ge
