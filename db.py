@@ -8,7 +8,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 PERSONS_SEED = ["Pablo", "Javi", "Jesus", "Fer", "Cuco", "Oli", "Emilio"]
 
 DRINKS_SEED = [
-    # code, label, category, volume_liters, unit_price_eur
     ("CORTAITA","Cortaita","BEER",0.25,1.65),
     ("CANA","Caña","BEER",0.25,1.50),
     ("JARRITA","Jarrita","BEER",0.25,2.00),
@@ -47,7 +46,7 @@ def init_db():
             );
             """)
 
-            # ASIGNACIÓN (persona <-> telegram id)
+            # ASIGNACIÓN persona <-> telegram
             cur.execute("""
             CREATE TABLE IF NOT EXISTS person_accounts (
               id SERIAL PRIMARY KEY,
@@ -80,12 +79,11 @@ def init_db():
             );
             """)
 
-            # EVENTOS
+            # EVENTOS (versión mínima; migramos después)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS drink_events (
               id SERIAL PRIMARY KEY,
               person_id INT NOT NULL REFERENCES persons(id),
-              telegram_user_id BIGINT NOT NULL,
               drink_type_id INT NOT NULL REFERENCES drink_types(id),
               quantity INT NOT NULL CHECK (quantity > 0),
               consumed_at DATE NOT NULL,
@@ -93,17 +91,20 @@ def init_db():
             );
             """)
 
-            # MIGRACIONES SUAVES (por si la tabla ya existía)
+            # MIGRACIONES SUAVES (para tablas antiguas)
             cur.execute("""
+            ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS telegram_user_id BIGINT;
+
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS year_start INT;
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS volume_liters_total NUMERIC(10,3);
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS price_eur_total NUMERIC(10,2);
+
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS is_void BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
             ALTER TABLE drink_events ADD COLUMN IF NOT EXISTS voided_by_telegram_user_id BIGINT;
             """)
 
-            # ÍNDICES
+            # ÍNDICES (crear después de tener columnas)
             cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_person_recent
               ON drink_events(person_id, is_void, created_at DESC);
@@ -150,7 +151,8 @@ def list_available_persons():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT id, name FROM persons
+            SELECT id, name
+            FROM persons
             WHERE status='NEW'
             ORDER BY name;
             """)
