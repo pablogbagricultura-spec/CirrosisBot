@@ -431,6 +431,7 @@ def deactivate_person(person_id: int):
             cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
             conn.commit()
 
+
 # -------------------------
 # Rankings detallados (por bebida)
 # -------------------------
@@ -489,10 +490,39 @@ def ranking_total_liters(year_start: int):
             return cur.fetchall()
 
 
+def ranking_drinks_totals(year_start: int):
+    """
+    Totales por tipo de bebida para el año (solo tipos con consumo > 0).
+    Devuelve: drink_type_id, category, label, unit_volume_liters, unidades, litros
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+                dt.id AS drink_type_id,
+                dt.category AS category,
+                dt.label AS label,
+                dt.volume_liters AS unit_volume_liters,
+                SUM(e.quantity) AS unidades,
+                COALESCE(SUM(e.volume_liters_total), 0) AS litros
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.id, dt.category, dt.label, dt.volume_liters
+            HAVING SUM(e.quantity) > 0
+            ORDER BY
+                COALESCE(SUM(e.volume_liters_total), 0) DESC,
+                SUM(e.quantity) DESC,
+                dt.category ASC,
+                dt.label ASC;
+            """, (year_start,))
+            return cur.fetchall()
+
+
 def ranking_by_drink(year_start: int):
     """
-    Ranking público por cada tipo de bebida.
-    Solo incluye bebidas con consumo > 0 (y eventos no anulados).
+    Ranking público por cada tipo de bebida (solo tipos con consumo > 0).
     Devuelve filas para agrupar en el bot:
       drink_type_id, category, label, unit_volume_liters, name, unidades, litros
     """
