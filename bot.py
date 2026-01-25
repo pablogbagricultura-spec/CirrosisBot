@@ -2,6 +2,8 @@ import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
+from db import init_db
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -18,6 +20,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("✅ Bot funcionando correctamente.")
 
 def main():
+    # Crea tablas al arrancar
+    init_db()
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(on_callback))
