@@ -5,26 +5,24 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from db import init_db, get_assigned_person, list_available_persons, assign_person
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-
 CB_PICK_PREFIX = "pick_person:"
 
 def pick_person_keyboard(rows):
-    # rows: [{"id":..,"name":..}, ...]
-    keyboard = []
-    for r in rows:
-        keyboard.append([InlineKeyboardButton(r["name"], callback_data=f"{CB_PICK_PREFIX}{r['id']}")])
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(r["name"], callback_data=f"{CB_PICK_PREFIX}{r['id']}")]
+        for r in rows
+    ])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
 
-    # ¿Ya asignado?
     person = get_assigned_person(tg_id)
     if person:
-        await update.message.reply_text(f"👋 Hola, {person['name']}.\n\n¿Que quieres hacer ahora? (siguiente paso)")
+        await update.message.reply_text(
+            f"👋 Hola, {person['name']}.\n\nMenú (próximo paso):\n➕ Añadir\n📊 Informes\n↩️ Deshacer"
+        )
         return
 
-    # No asignado: mostrar plazas libres
     available = list_available_persons()
     if not available:
         await update.message.reply_text("🚫 Acceso restringido.\nNo quedan plazas libres en CirrosisBot.")
@@ -37,35 +35,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    await q.answer()
+
     tg_id = q.from_user.id
     data = q.data or ""
 
     if data.startswith(CB_PICK_PREFIX):
-        await q.answer()
         person_id = int(data.split(":", 1)[1])
 
         status, person = assign_person(tg_id, person_id)
 
         if status in ("OK", "ALREADY"):
-            await q.edit_message_text(f"✅ Listo. Te has registrado como **{person['name']}**.", parse_mode="Markdown")
+            await q.edit_message_text(f"✅ Listo. Te has registrado como {person['name']}.")
             return
 
-        if status == "TAKEN":
-            # Recargar lista por si alguien la pilló justo antes
-            available = list_available_persons()
-            if not available:
-                await q.edit_message_text("🚫 Esa plaza ya no está disponible y no quedan plazas libres.")
-            else:
-                await q.edit_message_text(
-                    "⚠️ Esa plaza ya fue ocupada. Elige otra:",
-                    reply_markup=pick_person_keyboard(available),
-                )
-            return
-
-    # callback de prueba (si quieres mantenerlo)
-    if data == "hello":
-        await q.answer()
-        await q.edit_message_text("✅ Bot funcionando correctamente.")
+        # TAKEN
+        available = list_available_persons()
+        if not available:
+            await q.edit_message_text("🚫 Esa plaza ya no está disponible y no quedan plazas libres.")
+        else:
+            await q.edit_message_text(
+                "⚠️ Esa plaza ya fue ocupada. Elige otra:",
+                reply_markup=pick_person_keyboard(available),
+            )
 
 def main():
     init_db()
