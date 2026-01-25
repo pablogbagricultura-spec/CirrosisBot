@@ -1,5 +1,8 @@
 import os
 import datetime as dt
+import random
+from zoneinfo import ZoneInfo
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -7,10 +10,14 @@ from db import (
     init_db, get_assigned_person, list_available_persons, assign_person,
     list_drink_types, insert_event, list_last_events, void_event,
     list_years_with_data, report_year,
-    is_admin, add_person, list_active_persons, deactivate_person
+    is_admin, add_person, list_active_persons, deactivate_person,
+    get_person_year_totals, is_first_event_of_year,
+    list_active_telegram_user_ids,
+    month_summary, monthly_summary_already_sent, mark_monthly_summary_sent
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+TZ = ZoneInfo("Europe/Madrid")
 
 # Callbacks
 CB_PICK_PERSON = "pick_person:"
@@ -19,20 +26,20 @@ CB_MENU_REPORT = "menu:report"
 CB_MENU_UNDO = "menu:undo"
 CB_MENU_ADMIN = "menu:admin"
 
-CB_CAT = "cat:"          # cat:BEER / cat:OTHER
-CB_TYPE = "type:"        # type:<id>
-CB_QTY = "qty:"          # qty:1..5 / qty:more
-CB_DATE = "date:"        # date:today/yesterday/other
+CB_CAT = "cat:"
+CB_TYPE = "type:"
+CB_QTY = "qty:"
+CB_DATE = "date:"
 
-CB_UNDO_PICK = "undo:"         # undo:<event_id>
-CB_UNDO_CONFIRM = "undo_yes:"  # undo_yes:<event_id>
+CB_UNDO_PICK = "undo:"
+CB_UNDO_CONFIRM = "undo_yes:"
 CB_UNDO_CANCEL = "undo_no"
 
-CB_YEAR = "year:"        # year:<year_start>
+CB_YEAR = "year:"  # year:<year_start>
 
 CB_ADMIN_ADD = "admin:add"
 CB_ADMIN_REMOVE = "admin:remove"
-CB_ADMIN_REMOVE_ID = "admin:remove:"  # admin:remove:<id>
+CB_ADMIN_REMOVE_ID = "admin:remove:"
 
 def kb(rows):
     return InlineKeyboardMarkup(rows)
@@ -120,6 +127,86 @@ def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None 
 
 def get_state(context: ContextTypes.DEFAULT_TYPE):
     return context.user_data.get("state"), context.user_data.get("data", {})
+
+# --------- Logros / frases ---------
+
+MILESTONES_UNITS = [1, 50, 100, 200, 500]
+
+FUN_PHRASES = [
+    "🍻 Apuntado. Esto va cogiendo ritmo…",
+    "✅ Hecho. La ciencia avanza.",
+    "📌 Guardado. La libreta de la vergüenza no perdona.",
+    "😄 Apuntado. Nadie te juzga (bueno… un poco).",
+    "✅ Listo. CirrosisBot lo ha visto todo.",
+]
+
+def build_achievement_messages(person_name: str, year_start: int, qty_added: int, after_units: int, is_first: bool):
+    msgs = []
+    if is_first:
+        msgs.append(f"🥇 {person_name} inaugura el año cervecero {year_start}-{year_start+1}.")
+
+    before_units = after_units - qty_added
+    for m in MILESTONES_UNITS:
+        if before_units < m <= after_units:
+            if m == 1:
+                continue  # ya lo cubre el "primera del año"
+            msgs.append(f"🏅 {person_name} alcanza {m} consumiciones en {year_start}-{year_start+1}.")
+    return msgs
+
+# --------- Resumen mensual automático (día 1) ---------
+
+async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    now = dt.datetime.now(TZ)
+    if now.day != 1:
+        return
+
+    # Resumen del mes anterior
+    first_of_this_month = dt.date(now.year, now.month, 1)
+    prev_month_last_day = first_of_this_month - dt.timedelta(days=1)
+    y, m = prev_month_last_day.year, prev_month_last_day.month
+
+    if monthly_summary_already_sent(y, m):
+        return
+
+    # Marca primero (para evitar duplicados si hay reinicios)
+    if not mark_monthly_summary_sent(y, m):
+        return
+
+    rows = month_summary(y, m)
+
+    # Si no hay consumo, aún así enviamos un mensajito (divertido)
+    total_units = sum(int(r["unidades"]) for r in rows)
+    total_liters = sum(float(r["litros"]) for r in rows)
+    total_euros = sum(float(r["euros"]) for r in rows)
+
+    month_name = dt.date(y, m, 1).strftime("%B").capitalize()
+    lines = [f"📅 Resumen {month_name} {y}", ""]
+    lines.append(f"🍺 Total: {total_units} consumiciones")
+    lines.append(f"📏 Litros: {total_liters:.2f} L")
+    lines.append(f"💸 Gasto: {total_euros:.2f} €")
+    lines.append("")
+    lines.append("🏆 Top del mes:")
+
+    # Top 3 por euros (ya viene ordenado)
+    top = [r for r in rows if int(r["unidades"]) > 0][:3]
+    if not top:
+        lines.append("• Nadie ha apuntado nada este mes 😇")
+    else:
+        for i, r in enumerate(top, 1):
+            lines.append(f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €")
+
+    msg = "\n".join(lines)
+
+    # Enviar a todos los usuarios activos
+    bot = context.bot
+    for chat_id in list_active_telegram_user_ids():
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg)
+        except Exception:
+            # si alguien bloqueó el bot o similar, no rompemos el job
+            pass
+
+# --------- Handlers ---------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
@@ -269,16 +356,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "MENU", {})
         return
 
-    # -------- INFORME POR AÑO --------
+    # -------- INFORME POR AÑO + RANKINGS --------
     if data.startswith(CB_YEAR):
         y = int(data.split(":", 1)[1])
         rows = report_year(y)
-        lines = [f"📊 Informe {y}-{y+1}"]
+
+        # Rankings "bonitos": top 3 por litros y por euros
+        top_liters = sorted(rows, key=lambda r: float(r["litros"]), reverse=True)[:3]
+        top_euros = sorted(rows, key=lambda r: float(r["euros"]), reverse=True)[:3]
+
+        lines = [f"📊 Informe {y}-{y+1}", ""]
+        lines.append("📌 Totales por persona:")
         for r in rows:
             unidades = int(r["unidades"])
             litros = float(r["litros"])
             euros = float(r["euros"])
             lines.append(f"• {r['name']}: {unidades} uds | {litros:.2f} L | {euros:.2f} €")
+
+        lines.append("")
+        lines.append("🏆 Rankings:")
+        lines.append("— Top litros —")
+        for i, r in enumerate(top_liters, 1):
+            lines.append(f"  {i}º {r['name']} — {float(r['litros']):.2f} L")
+        lines.append("— Top gasto —")
+        for i, r in enumerate(top_euros, 1):
+            lines.append(f"  {i}º {r['name']} — {float(r['euros']):.2f} €")
+
         await q.edit_message_text("\n".join(lines), reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
         return
@@ -322,18 +425,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         consumed_at = dt.date.today() if which == "today" else (dt.date.today() - dt.timedelta(days=1))
         person = get_assigned_person(tg_id)
+        qty = int(sdata["qty"])
 
         insert_event(
             person_id=person["id"],
             telegram_user_id=tg_id,
             drink_type_id=sdata["drink_type_id"],
-            quantity=sdata["qty"],
+            quantity=qty,
             consumed_at=consumed_at,
         )
 
+        # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
-        await q.edit_message_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        base_msg = random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when})."
+        await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
+
+        # Logros (si toca)
+        year_start = (dt.date(consumed_at.year, 1, 7) <= consumed_at) and consumed_at.year or (consumed_at.year - 1)
+        totals = get_person_year_totals(person["id"], int(year_start))
+        after_units = int(totals["unidades"])
+        first = is_first_event_of_year(person["id"], int(year_start))
+        ach_msgs = build_achievement_messages(person["name"], int(year_start), qty, after_units, first)
+
+        for msg in ach_msgs:
+            try:
+                await context.bot.send_message(chat_id=tg_id, text=msg)
+            except Exception:
+                pass
+
         return
 
     # -------- DESHACER --------
@@ -392,17 +512,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         person = get_assigned_person(tg_id)
+        qty = int(sdata["qty"])
+
         insert_event(
             person_id=person["id"],
             telegram_user_id=tg_id,
             drink_type_id=sdata["drink_type_id"],
-            quantity=sdata["qty"],
+            quantity=qty,
             consumed_at=consumed_at,
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        await update.message.reply_text(f"✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        await update.message.reply_text(random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
+
+        # Logros
+        year_start = (dt.date(consumed_at.year, 1, 7) <= consumed_at) and consumed_at.year or (consumed_at.year - 1)
+        totals = get_person_year_totals(person["id"], int(year_start))
+        after_units = int(totals["unidades"])
+        first = is_first_event_of_year(person["id"], int(year_start))
+        ach_msgs = build_achievement_messages(person["name"], int(year_start), qty, after_units, first)
+        for msg in ach_msgs:
+            try:
+                await context.bot.send_message(chat_id=tg_id, text=msg)
+            except Exception:
+                pass
+
         return
 
     # ADMIN: añadir persona por texto
@@ -424,7 +559,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
+
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # JobQueue: comprobar cada día y si es día 1 envía resumen del mes anterior
+    app.job_queue.run_daily(
+        monthly_summary_job,
+        time=dt.time(hour=9, minute=0, tzinfo=TZ),
+        name="monthly_summary_daily_check",
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

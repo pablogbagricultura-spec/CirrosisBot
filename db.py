@@ -114,6 +114,17 @@ def init_db():
               ON drink_events(year_start, is_void);
             """)
 
+            # CONTROL DE ENVÍO DE RESUMEN MENSUAL (para no duplicar)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS monthly_summaries_sent (
+              id SERIAL PRIMARY KEY,
+              year INT NOT NULL,
+              month INT NOT NULL,
+              sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              UNIQUE(year, month)
+            );
+            """)
+
             conn.commit()
 
         # Seed personas
@@ -134,6 +145,10 @@ def init_db():
                     ON CONFLICT (code) DO NOTHING;
                 """, (code, label, cat, vol, price))
             conn.commit()
+
+# -------------------------
+# Usuarios / asignaciones
+# -------------------------
 
 def get_assigned_person(telegram_user_id: int):
     with get_conn() as conn:
@@ -185,6 +200,20 @@ def assign_person(telegram_user_id: int, person_id: int):
             if existing2:
                 return ("ALREADY", existing2)
             return ("TAKEN", None)
+
+def list_active_telegram_user_ids():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT DISTINCT telegram_user_id
+            FROM person_accounts
+            WHERE is_active=TRUE;
+            """)
+            return [r["telegram_user_id"] for r in cur.fetchall()]
+
+# -------------------------
+# Bebidas / eventos
+# -------------------------
 
 def list_drink_types(category: str):
     with get_conn() as conn:
@@ -256,6 +285,10 @@ def void_event(person_id: int, telegram_user_id: int, event_id: int):
             conn.commit()
             return row is not None
 
+# -------------------------
+# Informes / rankings
+# -------------------------
+
 def list_years_with_data():
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -283,12 +316,88 @@ def report_year(year_start: int):
             """, (year_start,))
             return cur.fetchall()
 
+def get_person_year_totals(person_id: int, year_start: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              COALESCE(SUM(quantity),0) AS unidades,
+              COALESCE(SUM(volume_liters_total),0) AS litros,
+              COALESCE(SUM(price_eur_total),0) AS euros,
+              COALESCE(COUNT(*),0) AS eventos
+            FROM drink_events
+            WHERE person_id=%s AND year_start=%s AND is_void=FALSE;
+            """, (person_id, year_start))
+            return cur.fetchone()
+
+def is_first_event_of_year(person_id: int, year_start: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT COUNT(*) AS c
+            FROM drink_events
+            WHERE person_id=%s AND year_start=%s AND is_void=FALSE;
+            """, (person_id, year_start))
+            return int(cur.fetchone()["c"]) == 1
+
+# -------------------------
+# Resumen mensual
+# -------------------------
+
+def month_summary(year: int, month: int):
+    # Totales del mes por persona (por fecha real consumed_at)
+    start = dt.date(year, month, 1)
+    if month == 12:
+        end = dt.date(year + 1, 1, 1)
+    else:
+        end = dt.date(year, month + 1, 1)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT p.name,
+                   COALESCE(SUM(e.quantity),0) AS unidades,
+                   COALESCE(SUM(e.volume_liters_total),0) AS litros,
+                   COALESCE(SUM(e.price_eur_total),0) AS euros
+            FROM persons p
+            LEFT JOIN drink_events e
+              ON e.person_id=p.id
+             AND e.is_void=FALSE
+             AND e.consumed_at >= %s
+             AND e.consumed_at < %s
+            GROUP BY p.name
+            ORDER BY euros DESC, litros DESC, unidades DESC;
+            """, (start, end))
+            return cur.fetchall()
+
+def monthly_summary_already_sent(year: int, month: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT 1
+            FROM monthly_summaries_sent
+            WHERE year=%s AND month=%s
+            LIMIT 1;
+            """, (year, month))
+            return cur.fetchone() is not None
+
+def mark_monthly_summary_sent(year: int, month: int) -> bool:
+    # devuelve True si lo marcó ahora, False si ya existía
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO monthly_summaries_sent(year, month)
+            VALUES (%s,%s)
+            ON CONFLICT (year, month) DO NOTHING;
+            """, (year, month))
+            conn.commit()
+            return cur.rowcount > 0
+
 # -------------------------
 # ADMIN (opción B)
 # -------------------------
 
 def is_admin(telegram_user_id: int) -> bool:
-    # Admin por persona asignada (robusto si cambias de dispositivo)
     p = get_assigned_person(telegram_user_id)
     return bool(p and p["name"] == "Pablo")
 
