@@ -175,7 +175,6 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
     rows = month_summary(y, m)
 
-    # Si no hay consumo, aún así enviamos un mensajito (divertido)
     total_units = sum(int(r["unidades"]) for r in rows)
     total_liters = sum(float(r["litros"]) for r in rows)
     total_euros = sum(float(r["euros"]) for r in rows)
@@ -194,7 +193,9 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
         lines.append("• Nadie ha apuntado nada este mes 😇")
     else:
         for i, r in enumerate(top, 1):
-            lines.append(f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €")
+            lines.append(
+                f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €"
+            )
 
     msg = "\n".join(lines)
 
@@ -204,62 +205,64 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             await bot.send_message(chat_id=chat_id, text=msg)
         except Exception:
-            # si alguien bloqueó el bot o similar, no rompemos el job
             pass
 
+    # --- Estadísticas vergonzosas (mensaje aparte, público) ---
+    # (IMPORTANTE: esto va DENTRO del async def)
+    try:
+        shame = monthly_shame_report(y, m)
+    except Exception:
+        shame = None
 
+    # Regla: mínimo 2 personas con consumo en el mes
 
-# --- Estadísticas vergonzosas (mensaje aparte, público) ---
-try:
-    shame = monthly_shame_report(y, m)
-except Exception:
-    shame = None
+    active_people = sum(1 for r in rows if int(r["unidades"]) > 0)
 
-if shame:
-    month_name2 = dt.date(y, m, 1).strftime("%B").capitalize()
-    lines2 = [f"🤡 Estadísticas vergonzosas — {month_name2} {y}", ""]
+    if shame and active_people >= 2:
+        month_name2 = dt.date(y, m, 1).strftime("%B").capitalize()
+        lines2 = [f"🤡 Estadísticas vergonzosas — {month_name2} {y}", ""]
 
-    fl = shame.get("false_leader")
-    if fl:
-        d = fl.get("first_day")
-        d_txt = d.strftime("%d/%m") if d else ""
-        lines2.append("🪦 Falso líder del mes")
-        lines2.append(f"• {fl['name']} lideró ({d_txt}) y acabó {fl['final_rank']}º.")
-        lines2.append("")
+        fl = shame.get("false_leader")
+        if fl:
+            d = fl.get("first_day")
+            d_txt = d.strftime("%d/%m") if d else ""
+            lines2.append("🪦 Falso líder del mes")
+            lines2.append(f"• {fl['name']} lideró ({d_txt}) y acabó {fl['final_rank']}º.")
+            lines2.append("")
 
-    bd = shame.get("biggest_drop")
-    if bd and bd.get("drop", 0) > 0:
-        lines2.append("📉 Mayor caída del mes")
-        lines2.append(f"• {bd['name']} pasó de {bd['best_rank']}º a {bd['final_rank']}º.")
-        lines2.append("")
+        bd = shame.get("biggest_drop")
+        if bd and bd.get("drop", 0) > 0:
+            lines2.append("📉 Mayor caída del mes")
+            lines2.append(f"• {bd['name']} pasó de {bd['best_rank']}º a {bd['final_rank']}º.")
+            lines2.append("")
 
-    ac = shame.get("almost_champion")
-    if ac and ac.get("times", 0) > 0:
-        lines2.append("🫠 El casi campeón")
-        lines2.append(f"• {ac['name']} se quedó a < 0,5 L del liderato {ac['times']} veces.")
-        lines2.append("")
+        ac = shame.get("almost_champion")
+        if ac and ac.get("times", 0) > 0:
+            lines2.append("🫠 El casi campeón")
+            lines2.append(f"• {ac['name']} se quedó a < 0,5 L del liderato {ac['times']} veces.")
+            lines2.append("")
 
-    gh = shame.get("ghost")
-    if gh:
-        lines2.append("😴 Fantasma del mes")
-        lines2.append(f"• {gh['name']} desapareció {gh['blank_days']} de {gh['days']} días.")
-        lines2.append("")
+        gh = shame.get("ghost")
+        if gh:
+            lines2.append("😴 Fantasma del mes")
+            lines2.append(f"• {gh['name']} desapareció {gh['blank_days']} de {gh['days']} días.")
+            lines2.append("")
 
-    sw = shame.get("saddest_week")
-    if sw:
-        ws = sw["week_start"]
-        we = ws + dt.timedelta(days=6)
-        lines2.append("🧊 Semana más triste")
-        lines2.append(f"• {ws.strftime('%d/%m')}–{we.strftime('%d/%m')}: {sw['liters']:.2f} L.")
-        lines2.append("")
+        sw = shame.get("saddest_week")
+        if sw:
+            ws = sw["week_start"]
+            we = ws + dt.timedelta(days=6)
+            lines2.append("🧊 Semana más triste")
+            lines2.append(f"• {ws.strftime('%d/%m')}–{we.strftime('%d/%m')}: {sw['liters']:.2f} L.")
+            lines2.append("")
 
-    if len(lines2) > 2:
-        msg2 = "\n".join(lines2).rstrip()
-        for chat_id in list_active_telegram_user_ids():
-            try:
-                await bot.send_message(chat_id=chat_id, text=msg2)
-            except Exception:
-                pass
+        if len(lines2) > 2:
+            msg2 = "\n".join(lines2).rstrip()
+            for chat_id in list_active_telegram_user_ids():
+                try:
+                    await bot.send_message(chat_id=chat_id, text=msg2)
+                except Exception:
+                    pass
 # --------- Handlers ---------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
