@@ -14,7 +14,10 @@ from db import (
     get_person_year_totals, is_first_event_of_year,
     list_active_telegram_user_ids,
     month_summary, monthly_summary_already_sent, mark_monthly_summary_sent,
-    monthly_shame_report
+    monthly_shame_report,
+    person_year_breakdown,
+    year_drinks_totals,
+    year_drink_type_person_totals,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -416,30 +419,118 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -------- INFORME POR AÑO + RANKINGS --------
     if data.startswith(CB_YEAR):
         y = int(data.split(":", 1)[1])
-        rows = report_year(y)
 
-        # Rankings "bonitos": top 3 por litros y por euros
-        top_liters = sorted(rows, key=lambda r: float(r["litros"]), reverse=True)[:3]
-        top_euros = sorted(rows, key=lambda r: float(r["euros"]), reverse=True)[:3]
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("🚫 No estás registrado. Usa /start.")
+            return
 
-        lines = [f"📊 Informe {y}-{y+1}", ""]
-        lines.append("📌 Totales por persona:")
-        for r in rows:
-            unidades = int(r["unidades"])
-            litros = float(r["litros"])
-            euros = float(r["euros"])
-            lines.append(f"• {r['name']}: {unidades} uds | {litros:.2f} L | {euros:.2f} €")
+        # -------- Helpers de formato --------
+        def fmt_units(n): 
+            return f"{int(n)} uds"
 
+        def fmt_liters(x): 
+            return f"{float(x):.2f} L"
+
+        def fmt_eur(x): 
+            return f"{float(x):.2f} €"
+
+        # -------- Datos --------
+        personal_rows = person_year_breakdown(person["id"], y)
+        year_rows = report_year(y)
+        drinks_year = year_drinks_totals(y)
+        per_type_people = year_drink_type_person_totals(y)
+
+        # -------- Construcción mensaje --------
+        lines = [f"📊 Informe {y}-{y+1}", "", "👤 Tu informe personal (solo tú)", person["name"], ""]
+
+        beers = [r for r in personal_rows if r["category"] == "BEER"]
+        others = [r for r in personal_rows if r["category"] == "OTHER"]
+
+        def sum_block(rows):
+            total_u = sum(int(r["unidades"]) for r in rows)
+            total_l = sum(float(r["litros"]) for r in rows)
+            total_e = sum(float(r["euros"]) for r in rows)
+            return total_u, total_l, total_e
+
+        if beers:
+            lines.append("🍺 Cervezas")
+            for r in beers:
+                lines.append(f"• {r['label']} — {fmt_units(r['unidades'])} · {fmt_liters(r['litros'])} · {fmt_eur(r['euros'])}")
+            bu, bl, be = sum_block(beers)
+            lines.append(f"Total cerveza: {fmt_units(bu)} · {fmt_liters(bl)} · {fmt_eur(be)}")
+            lines.append("")
+
+        if others:
+            lines.append("🥃 Otros")
+            for r in others:
+                # si NO quieres euros aquí, quita "· {fmt_eur...}"
+                lines.append(f"• {r['label']} — {fmt_units(r['unidades'])} · {fmt_eur(r['euros'])}")
+            ou = sum(int(r["unidades"]) for r in others)
+            oe = sum(float(r["euros"]) for r in others)
+            lines.append(f"Total otros: {fmt_units(ou)} · {fmt_eur(oe)}")
+            lines.append("")
+
+        tu = sum(int(r["unidades"]) for r in personal_rows)
+        te = sum(float(r["euros"]) for r in personal_rows)
+        lines.append(f"💸 Total general: {tu} consumiciones · {fmt_eur(te)}")
         lines.append("")
-        lines.append("🏆 Rankings:")
-        lines.append("— Top litros —")
-        for i, r in enumerate(top_liters, 1):
-            lines.append(f"  {i}º {r['name']} — {float(r['litros']):.2f} L")
-        lines.append("— Top gasto —")
-        for i, r in enumerate(top_euros, 1):
-            lines.append(f"  {i}º {r['name']} — {float(r['euros']):.2f} €")
+        lines.append("🏆 Rankings públicos")
+        lines.append("")
 
-        await q.edit_message_text("\n".join(lines), reply_markup=menu_kb(is_admin(tg_id)))
+        ranked_liters = sorted(
+            [r for r in year_rows if float(r["litros"]) > 0],
+            key=lambda r: float(r["litros"]),
+            reverse=True
+        )
+        lines.append("🍺 Ranking total por litros")
+        if not ranked_liters:
+            lines.append("Nadie ha apuntado litros aún 😇")
+        else:
+            for i, r in enumerate(ranked_liters, 1):
+                lines.append(f"{i}. {r['name']} — {fmt_liters(r['litros'])}")
+        lines.append("")
+
+        lines.append("🔥 Bebidas del año")
+        if not drinks_year:
+            lines.append("Nada registrado todavía.")
+        else:
+            for i, r in enumerate(drinks_year, 1):
+                has_liters = bool(r["has_liters"])
+                u = int(r["unidades"])
+                l = float(r["litros"])
+                if has_liters and l > 0:
+                    lines.append(f"{i}. {r['label']} — {fmt_liters(l)} ({fmt_units(u)})")
+                else:
+                    lines.append(f"{i}. {r['label']} — {fmt_units(u)}")
+        lines.append("")
+        lines.append("🍺 Ranking por tipo de bebida")
+        lines.append("")
+
+        grouped = {}
+        for r in per_type_people:
+            key = (r["category"], r["label"], bool(r["has_liters"]))
+            grouped.setdefault(key, []).append(r)
+
+        keys_sorted = sorted(grouped.keys(), key=lambda k: (0 if k[0] == "BEER" else 1, k[1].lower()))
+
+        for (cat, label, has_liters) in keys_sorted:
+            rows = grouped[(cat, label, has_liters)]
+            emoji = "🍺" if cat == "BEER" else "🥃"
+            lines.append(f"{emoji} {label}")
+
+            if has_liters:
+                rows = sorted(rows, key=lambda x: (float(x["litros"]), int(x["unidades"]), x["person_name"]), reverse=True)
+                for i, rr in enumerate(rows, 1):
+                    lines.append(f"{i}. {rr['person_name']} — {fmt_liters(rr['litros'])} ({fmt_units(rr['unidades'])})")
+            else:
+                rows = sorted(rows, key=lambda x: (int(x["unidades"]), x["person_name"]), reverse=True)
+                for i, rr in enumerate(rows, 1):
+                    lines.append(f"{i}. {rr['person_name']} — {fmt_units(rr['unidades'])}")
+
+            lines.append("")
+
+        await q.edit_message_text("\n".join(lines).rstrip(), reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
         return
 

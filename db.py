@@ -605,6 +605,86 @@ def monthly_shame_report(year: int, month: int, close_liters: float = 0.5):
         "saddest_week": saddest_week,
     }
 
+def person_year_breakdown(person_id: int, year_start: int):
+    """
+    Desglose por tipo de bebida para 1 persona en un año cervecero.
+    Devuelve filas: category, label, unidades, litros, euros, has_liters
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.category AS category,
+              dt.label AS label,
+              COALESCE(SUM(e.quantity), 0) AS unidades,
+              COALESCE(SUM(COALESCE(e.volume_liters_total, 0)), 0) AS litros,
+              COALESCE(SUM(e.price_eur_total), 0) AS euros,
+              (dt.volume_liters IS NOT NULL) AS has_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.person_id = %s
+              AND e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.category, dt.label, dt.volume_liters
+            HAVING COALESCE(SUM(e.quantity), 0) > 0
+            ORDER BY dt.category ASC, litros DESC, euros DESC, unidades DESC, dt.label ASC;
+            """, (person_id, year_start))
+            return cur.fetchall()
+
+
+def year_drinks_totals(year_start: int):
+    """
+    Totales del año por bebida (global, todos).
+    Devuelve: category, label, unidades, litros, euros, has_liters
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.category AS category,
+              dt.label AS label,
+              COALESCE(SUM(e.quantity), 0) AS unidades,
+              COALESCE(SUM(COALESCE(e.volume_liters_total, 0)), 0) AS litros,
+              COALESCE(SUM(e.price_eur_total), 0) AS euros,
+              (dt.volume_liters IS NOT NULL) AS has_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.category, dt.label, dt.volume_liters
+            HAVING COALESCE(SUM(e.quantity), 0) > 0
+            ORDER BY litros DESC, unidades DESC, dt.label ASC;
+            """, (year_start,))
+            return cur.fetchall()
+
+
+def year_drink_type_person_totals(year_start: int):
+    """
+    Totales por (bebida x persona) en el año.
+    Devuelve: category, label, person_name, unidades, litros, has_liters
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.category AS category,
+              dt.label AS label,
+              p.name AS person_name,
+              COALESCE(SUM(e.quantity), 0) AS unidades,
+              COALESCE(SUM(COALESCE(e.volume_liters_total, 0)), 0) AS litros,
+              (dt.volume_liters IS NOT NULL) AS has_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            JOIN persons p ON p.id = e.person_id
+            WHERE e.year_start = %s
+              AND e.is_void = FALSE
+            GROUP BY dt.category, dt.label, p.name, dt.volume_liters
+            HAVING COALESCE(SUM(e.quantity), 0) > 0
+            ORDER BY dt.category ASC, dt.label ASC, litros DESC, unidades DESC, p.name ASC;
+            """, (year_start,))
+            return cur.fetchall()
+
+
 # -------------------------
 # ADMIN (opción B)
 # -------------------------
