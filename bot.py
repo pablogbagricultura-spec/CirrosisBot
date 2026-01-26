@@ -325,8 +325,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "back:qty":
-        await q.edit_message_text("¿Cuándo se bebió?", reply_markup=date_kb())
-        set_state(context, "ADD_DATE", sdata)
+        # Volvemos al paso de elegir cantidad
+        await q.edit_message_text("¿Cuántas has tomado?", reply_markup=qty_kb())
+        set_state(context, "ADD_QTY", sdata)
         return
 
     # -------- REGISTRO PERSONA --------
