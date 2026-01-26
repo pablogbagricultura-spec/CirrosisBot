@@ -325,9 +325,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "back:qty":
-        await q.edit_message_text("¿Cuándo se bebió?", reply_markup=date_kb())
-        set_state(context, "ADD_DATE", sdata)
+        # Volver desde FECHA -> CANTIDAD
+        await q.edit_message_text("¿Cuántas has tomado?", reply_markup=qty_kb())
+
+        # Copia de seguridad del estado para no tocar el original
+        sdata2 = dict(sdata)
+
+        # Si había una cantidad previa, la borramos para forzar a elegir otra
+        sdata2.pop("qty", None)
+
+        # Volvemos al paso de cantidad
+        set_state(context, "ADD_QTY", sdata2)
         return
+
+
 
     # -------- REGISTRO PERSONA --------
     if data.startswith(CB_PICK_PERSON):
