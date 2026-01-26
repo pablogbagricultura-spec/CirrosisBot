@@ -394,6 +394,218 @@ def mark_monthly_summary_sent(year: int, month: int) -> bool:
             return cur.rowcount > 0
 
 # -------------------------
+# Estadísticas vergonzosas (mensuales)
+# -------------------------
+
+def _month_range(year: int, month: int):
+    start = dt.date(year, month, 1)
+    if month == 12:
+        end = dt.date(year + 1, 1, 1)
+    else:
+        end = dt.date(year, month + 1, 1)
+    return start, end
+
+def monthly_shame_report(year: int, month: int, close_liters: float = 0.5):
+    """
+    Devuelve un dict con estadísticas "vergonzosas" del mes (públicas),
+    o None si no aplica (p.ej. menos de 2 personas activas ese mes).
+
+    Reglas:
+    - Solo cuenta litros (volume_liters_total). Bebidas sin litros cuentan como 0 para estas stats.
+    - Solo personas que hayan bebido al menos 1 vez ese mes (eventos no anulados).
+    """
+    start, end = _month_range(year, month)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Personas activas del mes (han registrado algo)
+            cur.execute("""
+            SELECT DISTINCT p.id AS person_id, p.name AS name
+            FROM drink_events e
+            JOIN persons p ON p.id = e.person_id
+            WHERE e.is_void=FALSE
+              AND e.consumed_at >= %s
+              AND e.consumed_at < %s
+            ORDER BY p.name;
+            """, (start, end))
+            persons = cur.fetchall()
+
+            # Mínimo 2 personas activas para no humillar a alguien solo
+            if len(persons) < 2:
+                return None
+
+            person_ids = [r["person_id"] for r in persons]
+
+            # Grid día x persona con litros diarios y acumulados
+            cur.execute("""
+            WITH calendar AS (
+              SELECT generate_series(%s::date, (%s::date - interval '1 day'), interval '1 day')::date AS day
+            ),
+            daily AS (
+              SELECT
+                e.person_id,
+                e.consumed_at AS day,
+                SUM(COALESCE(e.volume_liters_total, 0))::numeric AS liters
+              FROM drink_events e
+              WHERE e.is_void=FALSE
+                AND e.consumed_at >= %s
+                AND e.consumed_at < %s
+                AND e.person_id = ANY(%s)
+              GROUP BY e.person_id, e.consumed_at
+            ),
+            grid AS (
+              SELECT
+                c.day,
+                p.id AS person_id,
+                p.name AS name,
+                COALESCE(d.liters, 0)::numeric AS liters
+              FROM calendar c
+              CROSS JOIN (SELECT id, name FROM persons WHERE id = ANY(%s)) p
+              LEFT JOIN daily d
+                ON d.person_id = p.id AND d.day = c.day
+            )
+            SELECT
+              day,
+              person_id,
+              name,
+              liters,
+              SUM(liters) OVER (PARTITION BY person_id ORDER BY day) AS cum_liters
+            FROM grid
+            ORDER BY day ASC, name ASC;
+            """, (start, end, start, end, person_ids, person_ids))
+            rows = cur.fetchall()
+
+    # Post-proceso en Python (pocos datos: personas x días)
+    days = []
+    by_day = {}  # day -> list of dicts (name, liters, cum_liters)
+    for r in rows:
+        day = r["day"]
+        if day not in by_day:
+            by_day[day] = []
+            days.append(day)
+        by_day[day].append({
+            "person_id": r["person_id"],
+            "name": r["name"],
+            "liters": float(r["liters"] or 0),
+            "cum_liters": float(r["cum_liters"] or 0),
+        })
+
+    def rank_day(entries):
+        # ranking por litros acumulados (desc). Desempate por nombre.
+        sorted_entries = sorted(entries, key=lambda x: (x["cum_liters"], x["name"]), reverse=True)
+        for i, e in enumerate(sorted_entries, 1):
+            e["_rank"] = i
+        leader = sorted_entries[0] if sorted_entries else None
+        return sorted_entries, leader
+
+    leaders = set()
+    first_lead_day = {}
+    ranks_by_person = {}   # name -> list of ranks over days (solo días con cum>0)
+    final_cum = {}         # name -> cum en el último día
+    daily_liters_by_day = {}
+
+    for day in days:
+        entries = by_day[day]
+        daily_liters_by_day[day] = sum(e["liters"] for e in entries)
+
+        ranked, leader = rank_day(entries)
+        if leader and leader["cum_liters"] > 0:
+            leaders.add(leader["name"])
+            first_lead_day.setdefault(leader["name"], day)
+
+        for e in ranked:
+            if e["cum_liters"] > 0:
+                ranks_by_person.setdefault(e["name"], []).append(e["_rank"])
+
+    last_day = days[-1]
+    final_entries, final_leader = rank_day(by_day[last_day])
+    final_ranking = [(e["name"], e["cum_liters"]) for e in final_entries]
+    for e in final_entries:
+        final_cum[e["name"]] = e["cum_liters"]
+
+    # 1) Falso líder: fue líder algún día pero NO termina líder
+    false_leader = None
+    if final_leader:
+        for name in sorted(leaders, key=lambda n: first_lead_day.get(n)):
+            if name != final_leader["name"]:
+                final_rank = next((i for i, (n, _) in enumerate(final_ranking, 1) if n == name), None)
+                false_leader = {"name": name, "first_day": first_lead_day.get(name), "final_rank": final_rank}
+                break
+
+    # 2) Mayor caída: mejor rank (mínimo) vs rank final
+    biggest_drop = None
+    max_drop = 0
+    for name, ranks in ranks_by_person.items():
+        if not ranks:
+            continue
+        best_rank = min(ranks)
+        final_rank = next((i for i, (n, _) in enumerate(final_ranking, 1) if n == name), None)
+        if final_rank is None:
+            continue
+        drop = final_rank - best_rank
+        if drop > max_drop:
+            max_drop = drop
+            biggest_drop = {"name": name, "best_rank": best_rank, "final_rank": final_rank, "drop": drop}
+
+    # 3) Casi campeón: días a <= close_liters del líder sin ser líder
+    almost_counts = {}
+    for day in days:
+        ranked, leader = rank_day(by_day[day])
+        if not leader or leader["cum_liters"] <= 0:
+            continue
+        leader_name = leader["name"]
+        leader_c = leader["cum_liters"]
+        for e in ranked[1:]:
+            if e["cum_liters"] <= 0 or e["name"] == leader_name:
+                continue
+            if leader_c - e["cum_liters"] <= close_liters:
+                almost_counts[e["name"]] = almost_counts.get(e["name"], 0) + 1
+
+    almost_champion = None
+    if almost_counts:
+        name = max(almost_counts.keys(), key=lambda n: (almost_counts[n], float(final_cum.get(n, 0)), n))
+        almost_champion = {"name": name, "times": almost_counts[name]}
+
+    # 4) Fantasma: más días en blanco (solo entre los que han bebido alguna vez ese mes)
+    days_in_month = len(days)
+    blank_counts = {}
+    for name in final_cum.keys():
+        blank = 0
+        for day in days:
+            entry = next((e for e in by_day[day] if e["name"] == name), None)
+            if entry and entry["liters"] == 0:
+                blank += 1
+        blank_counts[name] = blank
+
+    ghost = None
+    if blank_counts:
+        gname = max(blank_counts.keys(), key=lambda n: (blank_counts[n], n))
+        ghost = {"name": gname, "blank_days": blank_counts[gname], "days": days_in_month}
+
+    # 5) Semana más triste (lunes-domingo) dentro del rango del mes
+    week_totals = {}
+    for day, total in daily_liters_by_day.items():
+        week_start = day - dt.timedelta(days=day.weekday())  # lunes
+        week_totals[week_start] = week_totals.get(week_start, 0.0) + float(total)
+
+    saddest_week = None
+    if week_totals:
+        w = min(week_totals.keys(), key=lambda d: (week_totals[d], d))
+        saddest_week = {"week_start": w, "liters": float(week_totals[w])}
+
+    return {
+        "year": year,
+        "month": month,
+        "final_leader": final_leader["name"] if final_leader else None,
+        "final_ranking": final_ranking,  # list[(name, liters)]
+        "false_leader": false_leader,
+        "biggest_drop": biggest_drop,
+        "almost_champion": almost_champion,
+        "ghost": ghost,
+        "saddest_week": saddest_week,
+    }
+
+# -------------------------
 # ADMIN (opción B)
 # -------------------------
 
@@ -430,124 +642,3 @@ def deactivate_person(person_id: int):
         with conn.cursor() as cur:
             cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
             conn.commit()
-
-# -------------------------
-# Rankings detallados (por bebida)
-# -------------------------
-
-def report_year_by_drink_for_person(person_id: int, year_start: int):
-    """
-    Desglose por tipo de bebida para UNA persona y un año cervecero.
-    Solo incluye consumos > 0 y eventos no anulados.
-    Devuelve: category, label, unidades, litros, euros, unit_volume_liters
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT
-                dt.category AS category,
-                dt.label    AS label,
-                SUM(e.quantity) AS unidades,
-                COALESCE(SUM(e.volume_liters_total), 0) AS litros,
-                COALESCE(SUM(e.price_eur_total), 0) AS euros,
-                MAX(dt.volume_liters) AS unit_volume_liters
-            FROM drink_events e
-            JOIN drink_types dt ON dt.id = e.drink_type_id
-            WHERE e.person_id = %s
-              AND e.year_start = %s
-              AND e.is_void = FALSE
-            GROUP BY dt.category, dt.label
-            HAVING SUM(e.quantity) > 0
-            ORDER BY
-                dt.category ASC,
-                euros DESC, litros DESC, unidades DESC, dt.label ASC;
-            """, (person_id, year_start))
-            return cur.fetchall()
-
-
-def ranking_total_liters(year_start: int):
-    """
-    Ranking público total por litros (suma de todas las bebidas con volumen).
-    Solo incluye personas con litros > 0.
-    Devuelve: name, litros
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT
-                p.name AS name,
-                COALESCE(SUM(e.volume_liters_total), 0) AS litros
-            FROM persons p
-            JOIN drink_events e
-              ON e.person_id = p.id
-             AND e.year_start = %s
-             AND e.is_void = FALSE
-            GROUP BY p.name
-            HAVING COALESCE(SUM(e.volume_liters_total), 0) > 0
-            ORDER BY litros DESC, p.name ASC;
-            """, (year_start,))
-            return cur.fetchall()
-
-
-def ranking_drinks_totals(year_start: int):
-    """
-    Totales por tipo de bebida para el año (solo tipos con consumo > 0).
-    Devuelve: drink_type_id, category, label, unit_volume_liters, unidades, litros
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT
-                dt.id AS drink_type_id,
-                dt.category AS category,
-                dt.label AS label,
-                dt.volume_liters AS unit_volume_liters,
-                SUM(e.quantity) AS unidades,
-                COALESCE(SUM(e.volume_liters_total), 0) AS litros
-            FROM drink_events e
-            JOIN drink_types dt ON dt.id = e.drink_type_id
-            WHERE e.year_start = %s
-              AND e.is_void = FALSE
-            GROUP BY dt.id, dt.category, dt.label, dt.volume_liters
-            HAVING SUM(e.quantity) > 0
-            ORDER BY
-                COALESCE(SUM(e.volume_liters_total), 0) DESC,
-                SUM(e.quantity) DESC,
-                dt.category ASC,
-                dt.label ASC;
-            """, (year_start,))
-            return cur.fetchall()
-
-
-def ranking_by_drink(year_start: int):
-    """
-    Ranking público por cada tipo de bebida (solo tipos con consumo > 0).
-    Devuelve filas para agrupar en el bot:
-      drink_type_id, category, label, unit_volume_liters, name, unidades, litros
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT
-                dt.id AS drink_type_id,
-                dt.category AS category,
-                dt.label AS label,
-                dt.volume_liters AS unit_volume_liters,
-                p.name AS name,
-                SUM(e.quantity) AS unidades,
-                COALESCE(SUM(e.volume_liters_total), 0) AS litros
-            FROM drink_events e
-            JOIN drink_types dt ON dt.id = e.drink_type_id
-            JOIN persons p ON p.id = e.person_id
-            WHERE e.year_start = %s
-              AND e.is_void = FALSE
-            GROUP BY dt.id, dt.category, dt.label, dt.volume_liters, p.name
-            HAVING SUM(e.quantity) > 0
-            ORDER BY
-                dt.category ASC,
-                dt.label ASC,
-                COALESCE(SUM(e.volume_liters_total), 0) DESC,
-                SUM(e.quantity) DESC,
-                p.name ASC;
-            """, (year_start,))
-            return cur.fetchall()
