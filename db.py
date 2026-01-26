@@ -228,7 +228,7 @@ def report_year(year_start: int):
             SELECT p.name, COALESCE(SUM(e.quantity),0) AS unidades, COALESCE(SUM(e.volume_liters_total),0) AS litros, COALESCE(SUM(e.price_eur_total),0) AS euros
             FROM persons p
             LEFT JOIN drink_events e ON e.person_id=p.id AND e.year_start=%s AND e.is_void=FALSE
-            GROUP BY p.name ORDER BY euros DESC, litros DESC, unidades DESC;
+            GROUP BY p.name ORDER BY litros DESC, euros DESC, unidades DESC;
             """, (year_start,))
             return cur.fetchall()
 
@@ -256,7 +256,7 @@ def month_summary(year: int, month: int):
             SELECT p.name, COALESCE(SUM(e.quantity),0) AS unidades, COALESCE(SUM(e.volume_liters_total),0) AS litros, COALESCE(SUM(e.price_eur_total),0) AS euros
             FROM persons p
             LEFT JOIN drink_events e ON e.person_id=p.id AND e.is_void=FALSE AND e.consumed_at >= %s AND e.consumed_at < %s
-            GROUP BY p.name ORDER BY euros DESC, litros DESC, unidades DESC;
+            GROUP BY p.name ORDER BY litros DESC, euros DESC, unidades DESC;
             """, (start, end))
             return cur.fetchall()
 
@@ -385,7 +385,7 @@ def year_drink_type_person_totals(year_start: int):
             WHERE e.year_start = %s AND e.is_void = FALSE
             GROUP BY dt.category, dt.label, p.name, dt.volume_liters HAVING COALESCE(SUM(e.quantity), 0) > 0
             ORDER BY dt.category ASC, dt.label ASC, litros DESC, unidades DESC, p.name ASC;
-            """, (year_start,))
+            """, (year_start, ))
             return cur.fetchall()
 
 def is_admin(telegram_user_id: int) -> bool:
