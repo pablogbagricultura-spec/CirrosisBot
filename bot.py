@@ -18,6 +18,7 @@ from db import (
     person_year_breakdown,
     year_drinks_totals,
     year_drink_type_person_totals,
+    beer_year_start_for,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -381,12 +382,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == CB_MENU_REPORT:
         years = list_years_with_data()
         if not years:
-            await q.edit_message_text("Aún no hay datos para informes 🙂", reply_markup=menu_kb(is_admin(tg_id)))
+            await q.edit_message_text(
+                "Aún no hay datos para informes 🙂",
+                reply_markup=menu_kb(is_admin(tg_id))
+            )
             set_state(context, "MENU", {})
             return
-        await q.edit_message_text("¿Qué año cervecero quieres ver?", reply_markup=years_kb(years))
+
+        # Año cervecero actual
+        today = dt.date.today()
+        current_year = beer_year_start_for(today)
+
+        # Si hay datos del año actual, entra directo
+        if current_year in years:
+            await q.edit_message_text(
+                f"Cargando informe {current_year}-{current_year+1}…"
+            )
+            q.data = f"{CB_YEAR}{current_year}"
+            await handle_callback(update, context)
+            return
+
+        # Si no, muestra selector normal
+        await q.edit_message_text(
+            "¿Qué año cervecero quieres ver?",
+            reply_markup=years_kb(years)
+        )
         set_state(context, "REPORT_PICK_YEAR", {})
         return
+
+
 
     # -------- ADMIN --------
     if data == CB_MENU_ADMIN:
