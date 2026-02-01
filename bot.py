@@ -7,24 +7,44 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from db import (
-    init_db, get_assigned_person, list_available_persons, assign_person,
+    init_db,
+    # Asignación / acceso
+    get_assigned_person,
+    upsert_pending_telegram,
+    list_pending_telegrams,
+
+    # Bebidas / eventos
     list_drink_types, insert_event, list_last_events, void_event,
+
+    # Informes / rankings
     list_years_with_data, report_year,
-    is_admin, add_person, list_active_persons, deactivate_person,
     get_person_year_totals, is_first_event_of_year,
-    list_active_telegram_user_ids,
     month_summary, monthly_summary_already_sent, mark_monthly_summary_sent,
     monthly_shame_report,
     person_year_breakdown,
     year_drinks_totals,
     year_drink_type_person_totals,
+
+    # Envíos automáticos
+    list_active_telegram_user_ids,
+
+    # Admin
+    is_admin,
+    add_person,
+    list_persons_by_status,
+    list_persons_without_active_telegram,
+    search_persons_by_name,
+    get_person_profile,
+    admin_assign_telegram_to_person,
+    admin_suspend_person,
+    admin_reactivate_person,
+    admin_delete_person,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 TZ = ZoneInfo("Europe/Madrid")
 
 # Callbacks
-CB_PICK_PERSON = "pick_person:"
 CB_MENU_ADD = "menu:add"
 CB_MENU_REPORT = "menu:report"
 CB_MENU_UNDO = "menu:undo"
@@ -41,9 +61,21 @@ CB_UNDO_CANCEL = "undo_no"
 
 CB_YEAR = "year:"  # year:<year_start>
 
-CB_ADMIN_ADD = "admin:add"
-CB_ADMIN_REMOVE = "admin:remove"
-CB_ADMIN_REMOVE_ID = "admin:remove:"
+# Admin callbacks
+CB_ADMIN_PERSONS = "admin:persons"
+CB_ADMIN_REQUESTS = "admin:requests"
+CB_ADMIN_CREATE_PERSON = "admin:create_person"
+
+CB_ADMIN_PERSONS_FILTER = "admin:persons_filter:"      # admin:persons_filter:<ACTIVE|INACTIVE|NO_TG>
+CB_ADMIN_PERSON_VIEW = "admin:person_view:"           # admin:person_view:<person_id>
+CB_ADMIN_PERSON_ASSIGN = "admin:person_assign:"        # admin:person_assign:<person_id>
+CB_ADMIN_PERSON_SUSPEND = "admin:person_suspend:"      # admin:person_suspend:<person_id>
+CB_ADMIN_PERSON_REACTIVATE = "admin:person_reactivate:"# admin:person_reactivate:<person_id>
+CB_ADMIN_PERSON_DELETE = "admin:person_delete:"        # admin:person_delete:<person_id>
+CB_ADMIN_PERSON_DELETE_CONFIRM = "admin:person_delete_confirm:"  # ...:<person_id>
+
+CB_ADMIN_PICK_TG = "admin:pick_tg:"                    # admin:pick_tg:<telegram_user_id>
+CB_ADMIN_SEARCH_PERSON = "admin:search_person"
 
 def kb(rows):
     return InlineKeyboardMarkup(rows)
@@ -112,17 +144,60 @@ def years_kb(years):
     rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
 
-def admin_kb():
+def admin_main_kb():
     return kb([
-        [InlineKeyboardButton("➕ Añadir persona", callback_data=CB_ADMIN_ADD)],
-        [InlineKeyboardButton("➖ Desactivar persona", callback_data=CB_ADMIN_REMOVE)],
+        [InlineKeyboardButton("👥 Personas (histórico)", callback_data=CB_ADMIN_PERSONS)],
+        [InlineKeyboardButton("📨 Solicitudes (pendientes)", callback_data=CB_ADMIN_REQUESTS)],
+        [InlineKeyboardButton("➕ Crear persona/plaza", callback_data=CB_ADMIN_CREATE_PERSON)],
         [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
     ])
 
-def admin_remove_kb(persons):
-    rows = [[InlineKeyboardButton(p["name"], callback_data=f"{CB_ADMIN_REMOVE_ID}{p['id']}")] for p in persons]
+def admin_persons_menu_kb():
+    return kb([
+        [InlineKeyboardButton("✅ Ver ACTIVAS", callback_data=f"{CB_ADMIN_PERSONS_FILTER}ACTIVE")],
+        [InlineKeyboardButton("⛔ Ver INACTIVAS", callback_data=f"{CB_ADMIN_PERSONS_FILTER}INACTIVE")],
+        [InlineKeyboardButton("🆓 Ver SIN TELEGRAM", callback_data=f"{CB_ADMIN_PERSONS_FILTER}NO_TG")],
+        [InlineKeyboardButton("🔎 Buscar por nombre", callback_data=CB_ADMIN_SEARCH_PERSON)],
+        [InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)],
+    ])
+
+def admin_person_list_kb(persons):
+    rows = []
+    for p in persons:
+        label = f"{p['name']} ({p['status']})"
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_ADMIN_PERSON_VIEW}{p['id']}")])
+    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_ADMIN_PERSONS)])
+    return kb(rows)
+
+def admin_requests_kb(requests):
+    rows = []
+    for r in requests:
+        uname = (r.get("username") or "").strip()
+        name = (r.get("full_name") or "").strip()
+        label = f"{name}" if name else (f"@{uname}" if uname else str(r["telegram_user_id"]))
+        if uname:
+            label = f"{label} (@{uname})" if name else f"@{uname}"
+        label = f"{label} — {r['telegram_user_id']}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"{CB_ADMIN_PICK_TG}{r['telegram_user_id']}")])
     rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)])
     return kb(rows)
+
+def admin_person_profile_kb(person_id: int, status: str, has_active_tg: bool):
+    rows = []
+    rows.append([InlineKeyboardButton("✅ Asignar / Reasignar Telegram", callback_data=f"{CB_ADMIN_PERSON_ASSIGN}{person_id}")])
+    if status == "INACTIVE":
+        rows.append([InlineKeyboardButton("▶️ Reactivar", callback_data=f"{CB_ADMIN_PERSON_REACTIVATE}{person_id}")])
+    else:
+        rows.append([InlineKeyboardButton("⛔ Suspender", callback_data=f"{CB_ADMIN_PERSON_SUSPEND}{person_id}")])
+    rows.append([InlineKeyboardButton("💀 Eliminar (borrado total)", callback_data=f"{CB_ADMIN_PERSON_DELETE}{person_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_ADMIN_PERSONS)])
+    return kb(rows)
+
+def admin_delete_confirm_kb(person_id: int):
+    return kb([
+        [InlineKeyboardButton("✅ Entiendo, continuar", callback_data=f"{CB_ADMIN_PERSON_DELETE_CONFIRM}{person_id}")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_ADMIN_PERSONS)],
+    ])
 
 def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None = None):
     context.user_data["state"] = state
@@ -270,9 +345,19 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
+    user = update.effective_user
+
     person = get_assigned_person(tg_id)
 
+    # Registrado
     if person:
+        if person.get("status") == "INACTIVE":
+            await update.message.reply_text(
+                "🚫 Estás suspendido.\nEl admin tiene que reactivarte para volver a usar el bot."
+            )
+            set_state(context, "SUSPENDED", {})
+            return
+
         await update.message.reply_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
             reply_markup=menu_kb(is_admin(tg_id)),
@@ -280,16 +365,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "MENU", {})
         return
 
-    available = list_available_persons()
-    if not available:
-        await update.message.reply_text("🚫 Acceso restringido.\nNo quedan plazas libres en CirrosisBot.")
-        return
+    # No asignado -> solicitud pendiente (no hay auto-asignación)
+    username = getattr(user, "username", None)
+    full_name = getattr(user, "full_name", None)
+    try:
+        upsert_pending_telegram(tg_id, username, full_name)
+    except Exception:
+        pass
 
     await update.message.reply_text(
-        "👤 ¿Quién eres?\n\n(Esto solo se hace una vez)",
-        reply_markup=persons_kb(available),
+        "👋 ¡Recibido!\n\n📨 Tu solicitud está pendiente de aprobación.\n"
+        "Cuando el admin te asigne una plaza podrás usar el bot."
     )
-    set_state(context, "PICK_PERSON", {})
+    set_state(context, "PENDING", {})
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -298,9 +387,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     state, sdata = get_state(context)
 
+    # Guard rails: usuarios no asignados o suspendidos no pueden navegar por menús antiguos
+    assigned = get_assigned_person(tg_id)
+    if assigned and assigned.get("status") == "INACTIVE" and not is_admin(tg_id):
+        await q.edit_message_text("🚫 Estás suspendido. El admin debe reactivarte.")
+        set_state(context, "SUSPENDED", {})
+        return
+    if not assigned and not is_admin(tg_id):
+        await q.edit_message_text("📨 Estás pendiente de aprobación. El admin debe asignarte una plaza.")
+        set_state(context, "PENDING", {})
+        return
+
     # -------- BACKS --------
     if data == "back:menu":
         person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("📨 Estás pendiente de aprobación. El admin debe asignarte una plaza.")
+            set_state(context, "PENDING", {})
+            return
+        if person.get("status") == "INACTIVE":
+            await q.edit_message_text("🚫 Estás suspendido. El admin debe reactivarte.")
+            set_state(context, "SUSPENDED", {})
+            return
         await q.edit_message_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
             reply_markup=menu_kb(is_admin(tg_id)),
@@ -340,27 +448,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-    # -------- REGISTRO PERSONA --------
-    if data.startswith(CB_PICK_PERSON):
-        person_id = int(data.split(":", 1)[1])
-        status, person = assign_person(tg_id, person_id)
-
-        if status in ("OK", "ALREADY"):
-            await q.edit_message_text(f"✅ Perfecto. Te has registrado como {person['name']}.")
-            await q.message.reply_text(
-                f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-                reply_markup=menu_kb(is_admin(tg_id)),
-            )
-            set_state(context, "MENU", {})
-            return
-
-        available = list_available_persons()
-        if not available:
-            await q.edit_message_text("🚫 Esa plaza ya no está disponible y no quedan plazas libres.")
-        else:
-            await q.edit_message_text("⚠️ Esa plaza ya fue ocupada. Elige otra:", reply_markup=persons_kb(available))
-        return
-
     # -------- MENÚ --------
     if data == CB_MENU_ADD:
         await q.edit_message_text("¿Qué vas a añadir?", reply_markup=categories_kb())
@@ -388,43 +475,223 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "REPORT_PICK_YEAR", {})
         return
 
+
     # -------- ADMIN --------
     if data == CB_MENU_ADMIN:
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.", reply_markup=menu_kb(False))
             return
-        await q.edit_message_text("⚙️ Administración\n\n¿Qué quieres hacer?", reply_markup=admin_kb())
+        await q.edit_message_text("⚙️ Administración", reply_markup=admin_main_kb())
         set_state(context, "ADMIN", {})
         return
 
-    if data == CB_ADMIN_ADD:
+    if data == CB_ADMIN_PERSONS:
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.")
             return
-        await q.edit_message_text("Escribe el nombre de la nueva persona:")
-        set_state(context, "ADMIN_ADD", {})
+        await q.edit_message_text("👥 Personas (histórico)", reply_markup=admin_persons_menu_kb())
+        set_state(context, "ADMIN_PERSONS_MENU", {})
         return
 
-    if data == CB_ADMIN_REMOVE:
+    if data.startswith(CB_ADMIN_PERSONS_FILTER):
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.")
             return
-        persons = list_active_persons()
+        filt = data.split(":", 2)[2]
+        if filt == "ACTIVE":
+            persons = list_persons_by_status("ACTIVE")
+            title = "✅ Personas ACTIVAS"
+        elif filt == "INACTIVE":
+            persons = list_persons_by_status("INACTIVE")
+            title = "⛔ Personas INACTIVAS"
+        else:
+            persons = list_persons_without_active_telegram()
+            title = "🆓 Personas SIN TELEGRAM"
         if not persons:
-            await q.edit_message_text("No hay personas activas para desactivar.", reply_markup=admin_kb())
+            await q.edit_message_text(f"{title}\n\n(ninguna)", reply_markup=admin_persons_menu_kb())
+            set_state(context, "ADMIN_PERSONS_MENU", {})
             return
-        await q.edit_message_text("¿A quién quieres desactivar?", reply_markup=admin_remove_kb(persons))
-        set_state(context, "ADMIN_REMOVE", {})
+        await q.edit_message_text(title, reply_markup=admin_person_list_kb(persons))
+        set_state(context, "ADMIN_PERSONS_LIST", {"filter": filt})
         return
 
-    if data.startswith(CB_ADMIN_REMOVE_ID):
+    if data == CB_ADMIN_SEARCH_PERSON:
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.")
             return
-        pid = int(data.split(":")[2])
-        deactivate_person(pid)
-        await q.edit_message_text("✅ Persona desactivada.", reply_markup=menu_kb(True))
-        set_state(context, "MENU", {})
+        await q.edit_message_text("🔎 Escribe el nombre (o parte) para buscar:")
+        set_state(context, "ADMIN_PERSON_SEARCH", {})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_VIEW):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.split(":", 2)[2])
+        prof = get_person_profile(person_id)
+        if not prof:
+            await q.edit_message_text("⚠️ No encontrada.", reply_markup=admin_persons_menu_kb())
+            set_state(context, "ADMIN_PERSONS_MENU", {})
+            return
+
+        p = prof["person"]
+        active = prof["active_account"]
+        prev = prof["previous_accounts"]
+        stats = prof["stats"]
+
+        lines = [f"👤 Ficha: {p['name']}", f"Estado: {p['status']}"]
+
+        if active:
+            lines.append(f"Telegram activo: {active['telegram_user_id']}")
+        else:
+            lines.append("Telegram activo: —")
+
+        if prev:
+            lines.append("")
+            lines.append("Telegrams anteriores:")
+            for r in prev[:5]:
+                ua = r.get("unassigned_at")
+                ua_txt = ua.strftime("%Y-%m-%d") if ua else "?"
+                lines.append(f"• {r['telegram_user_id']} (hasta {ua_txt})")
+
+        lines.append("")
+        last = stats.get("last_activity_at")
+        last_txt = last.strftime("%Y-%m-%d") if last else "—"
+        lines.append(f"Eventos: {int(stats.get('events_count') or 0)}")
+        lines.append(f"Última actividad: {last_txt}")
+
+        await q.edit_message_text(
+            "\n".join(lines),
+            reply_markup=admin_person_profile_kb(p["id"], p["status"], bool(active)),
+        )
+        set_state(context, "ADMIN_PERSON_PROFILE", {"person_id": p["id"]})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_ASSIGN):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.split(":", 2)[2])
+        reqs = list_pending_telegrams(20)
+        if not reqs:
+            await q.edit_message_text(
+                "📨 No hay solicitudes pendientes ahora mismo.",
+                reply_markup=admin_person_profile_kb(person_id, get_person_profile(person_id)["person"]["status"], False),
+            )
+            set_state(context, "ADMIN_PERSON_PROFILE", {"person_id": person_id})
+            return
+        await q.edit_message_text("📨 Elige un Telegram pendiente para asignar:", reply_markup=admin_requests_kb(reqs))
+        set_state(context, "ADMIN_ASSIGN_PICK_TG", {"person_id": person_id})
+        return
+
+    if data.startswith(CB_ADMIN_PICK_TG):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        picked_tg = int(data.split(":", 2)[2])
+
+        # Si venimos de "asignar a persona"
+        if state == "ADMIN_ASSIGN_PICK_TG" and sdata.get("person_id"):
+            person_id = int(sdata["person_id"])
+            st, _ = admin_assign_telegram_to_person(person_id, picked_tg)
+            if st == "TG_TAKEN":
+                await q.edit_message_text("⚠️ Ese Telegram ya está asignado a otra persona.")
+                return
+            if st == "NOT_FOUND":
+                await q.edit_message_text("⚠️ Persona no encontrada.")
+                return
+
+            prof = get_person_profile(person_id)
+            name = prof["person"]["name"] if prof else "la persona"
+            await q.edit_message_text(f"✅ Asignado {picked_tg} a {name}.")
+            # Volver a ficha
+            prof = get_person_profile(person_id)
+            if prof:
+                p = prof["person"]
+                await q.message.reply_text(
+                    f"👤 {p['name']} actualizado.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Abrir ficha", callback_data=f"{CB_ADMIN_PERSON_VIEW}{person_id}")]]),
+                )
+            set_state(context, "ADMIN", {})
+            return
+
+        # Vista simple de solicitud (desde menú solicitudes)
+        await q.edit_message_text(
+            f"📨 Solicitud pendiente\n\nTelegram: {picked_tg}\n\nPara asignarlo: abre una persona y pulsa “Asignar Telegram”.",
+            reply_markup=admin_main_kb(),
+        )
+        set_state(context, "ADMIN", {})
+        return
+
+    if data == CB_ADMIN_REQUESTS:
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        reqs = list_pending_telegrams(20)
+        if not reqs:
+            await q.edit_message_text("📨 No hay solicitudes pendientes.", reply_markup=admin_main_kb())
+            set_state(context, "ADMIN", {})
+            return
+        await q.edit_message_text("📨 Solicitudes pendientes:", reply_markup=admin_requests_kb(reqs))
+        set_state(context, "ADMIN_REQUESTS", {})
+        return
+
+    if data == CB_ADMIN_CREATE_PERSON:
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        await q.edit_message_text("➕ Escribe el nombre de la nueva persona/plaza:")
+        set_state(context, "ADMIN_CREATE_PERSON", {})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_SUSPEND):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.split(":", 2)[2])
+        admin_suspend_person(person_id)
+        await q.edit_message_text("✅ Persona suspendida.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver a ficha", callback_data=f"{CB_ADMIN_PERSON_VIEW}{person_id}")]]))
+        set_state(context, "ADMIN", {})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_REACTIVATE):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.split(":", 2)[2])
+        admin_reactivate_person(person_id)
+        await q.edit_message_text("✅ Persona reactivada.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Volver a ficha", callback_data=f"{CB_ADMIN_PERSON_VIEW}{person_id}")]]))
+        set_state(context, "ADMIN", {})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_DELETE):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.split(":", 2)[2])
+        prof = get_person_profile(person_id)
+        if not prof:
+            await q.edit_message_text("⚠️ No encontrada.", reply_markup=admin_persons_menu_kb())
+            return
+        name = prof["person"]["name"]
+        warn = (
+            f"💀 Vas a ELIMINAR a {name}.\n\n"
+            "Esto borra TODO: persona/plaza, eventos e historial de Telegram.\n"
+            "Si esa persona tenía Telegram asignado, tendrá que volver a solicitar acceso y aprobarlo el admin."
+        )
+        await q.edit_message_text(warn, reply_markup=admin_delete_confirm_kb(person_id))
+        set_state(context, "ADMIN_DELETE_CONFIRM_1", {"person_id": person_id, "name": name})
+        return
+
+    if data.startswith(CB_ADMIN_PERSON_DELETE_CONFIRM):
+        if not is_admin(tg_id):
+            await q.edit_message_text("🚫 No tienes permisos.")
+            return
+        person_id = int(data.rsplit(':', 1)[1])
+        prof = get_person_profile(person_id)
+        name = (prof["person"]["name"] if prof else sdata.get("name") or "persona")
+        await q.edit_message_text(f"✍️ Escribe EXACTAMENTE:\n\nELIMINAR {name}")
+        set_state(context, "ADMIN_DELETE_CONFIRM_TEXT", {"person_id": person_id, "name": name})
         return
 
     # -------- INFORME POR AÑO + RANKINGS --------
@@ -699,8 +966,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # ADMIN: añadir persona por texto
-    if state == "ADMIN_ADD":
+    # ADMIN: crear persona/plaza por texto
+    if state == "ADMIN_CREATE_PERSON":
         if not is_admin(tg_id):
             await update.message.reply_text("🚫 No tienes permisos.")
             set_state(context, "MENU", {})
@@ -708,10 +975,64 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ok = add_person(text)
         if ok:
+            await update.message.reply_text(f"✅ '{text}' creada como nueva persona/plaza.", reply_markup=menu_kb(True))
+        else:
+            await update.message.reply_text("⚠️ No se pudo crear (¿ya existe?).", reply_markup=menu_kb(True))
+        set_state(context, "MENU", {})
+        return
+
+    # ADMIN: buscar persona
+    if state == "ADMIN_PERSON_SEARCH":
+        if not is_admin(tg_id):
+            await update.message.reply_text("🚫 No tienes permisos.")
+            set_state(context, "MENU", {})
+            return
+        persons = search_persons_by_name(text, limit=20)
+        if not persons:
+            await update.message.reply_text("No encontré coincidencias.", reply_markup=admin_persons_menu_kb())
+            set_state(context, "ADMIN_PERSONS_MENU", {})
+            return
+        await update.message.reply_text("Resultados:", reply_markup=admin_person_list_kb(persons))
+        set_state(context, "ADMIN_PERSONS_LIST", {"filter": "SEARCH"})
+        return
+
+    # ADMIN: confirmación fuerte de borrado
+    if state == "ADMIN_DELETE_CONFIRM_TEXT":
+        if not is_admin(tg_id):
+            await update.message.reply_text("🚫 No tienes permisos.")
+            set_state(context, "MENU", {})
+            return
+
+        name = sdata.get("name") or ""
+        expected = f"ELIMINAR {name}".strip()
+        if text != expected:
+            await update.message.reply_text("❌ No coincide. Cancelado.", reply_markup=admin_main_kb())
+            set_state(context, "ADMIN", {})
+            return
+
+        person_id = int(sdata["person_id"])
+        ok = admin_delete_person(person_id)
+        if ok:
+            await update.message.reply_text("💀 Eliminado. Esa plaza ya no existe.", reply_markup=admin_main_kb())
+        else:
+            await update.message.reply_text("⚠️ No se pudo eliminar (¿ya no existe?).", reply_markup=admin_main_kb())
+        set_state(context, "ADMIN", {})
+        return
+
+        ok = add_person(text)
+        if ok:
             await update.message.reply_text(f"✅ '{text}' añadido como nueva persona.", reply_markup=menu_kb(True))
         else:
             await update.message.reply_text("⚠️ No se pudo añadir (¿ya existe?).", reply_markup=menu_kb(True))
         set_state(context, "MENU", {})
+        return
+
+    if state == "SUSPENDED":
+        await update.message.reply_text("🚫 Estás suspendido. El admin debe reactivarte.")
+        return
+
+    if state == "PENDING":
+        await update.message.reply_text("📨 Tu solicitud sigue pendiente. Cuando el admin te asigne una plaza podrás usar el bot.")
         return
 
     await update.message.reply_text("Escribe /start para ver el menú.")

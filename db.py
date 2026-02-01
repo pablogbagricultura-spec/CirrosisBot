@@ -79,6 +79,17 @@ def init_db():
             );
             """)
 
+            # SOLICITUDES PENDIENTES (telegram sin asignar)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_telegrams (
+              telegram_user_id BIGINT PRIMARY KEY,
+              username TEXT,
+              full_name TEXT,
+              first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            """)
+
             # EVENTOS (mínimo)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS drink_events (
@@ -154,7 +165,7 @@ def get_assigned_person(telegram_user_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT p.id, p.name
+            SELECT p.id, p.name, p.status
             FROM person_accounts pa
             JOIN persons p ON p.id = pa.person_id
             WHERE pa.telegram_user_id = %s AND pa.is_active = TRUE
@@ -201,13 +212,53 @@ def assign_person(telegram_user_id: int, person_id: int):
                 return ("ALREADY", existing2)
             return ("TAKEN", None)
 
+
+
+# -------------------------
+# Solicitudes pendientes (telegram sin asignar)
+# -------------------------
+
+def upsert_pending_telegram(telegram_user_id: int, username: str | None, full_name: str | None):
+    """Registra/actualiza una solicitud de acceso de un Telegram no asignado."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO pending_telegrams(telegram_user_id, username, full_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (telegram_user_id)
+            DO UPDATE SET
+              username = EXCLUDED.username,
+              full_name = EXCLUDED.full_name,
+              last_seen_at = now();
+            """, (telegram_user_id, username, full_name))
+            conn.commit()
+
+def list_pending_telegrams(limit: int = 20):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT telegram_user_id, username, full_name, first_seen_at, last_seen_at
+            FROM pending_telegrams
+            ORDER BY last_seen_at DESC
+            LIMIT %s;
+            """, (limit,))
+            return cur.fetchall()
+
+def delete_pending_telegram(telegram_user_id: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_telegrams WHERE telegram_user_id=%s;", (telegram_user_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
 def list_active_telegram_user_ids():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT DISTINCT telegram_user_id
-            FROM person_accounts
-            WHERE is_active=TRUE;
+            SELECT DISTINCT pa.telegram_user_id
+            FROM person_accounts pa
+            JOIN persons p ON p.id = pa.person_id
+            WHERE pa.is_active=TRUE AND p.status='ACTIVE';
             """)
             return [r["telegram_user_id"] for r in cur.fetchall()]
 
@@ -311,6 +362,7 @@ def report_year(year_start: int):
             FROM persons p
             LEFT JOIN drink_events e
               ON e.person_id=p.id AND e.year_start=%s AND e.is_void=FALSE
+            WHERE p.status='ACTIVE'
             GROUP BY p.name
             ORDER BY euros DESC, litros DESC, unidades DESC;
             """, (year_start,))
@@ -365,6 +417,7 @@ def month_summary(year: int, month: int):
              AND e.is_void=FALSE
              AND e.consumed_at >= %s
              AND e.consumed_at < %s
+            WHERE p.status='ACTIVE'
             GROUP BY p.name
             ORDER BY euros DESC, litros DESC, unidades DESC;
             """, (start, end))
@@ -426,6 +479,7 @@ def monthly_shame_report(year: int, month: int, close_liters: float = 0.5):
             WHERE e.is_void=FALSE
               AND e.consumed_at >= %s
               AND e.consumed_at < %s
+              AND p.status='ACTIVE'
             ORDER BY p.name;
             """, (start, end))
             persons = cur.fetchall()
@@ -678,6 +732,7 @@ def year_drink_type_person_totals(year_start: int):
             JOIN persons p ON p.id = e.person_id
             WHERE e.year_start = %s
               AND e.is_void = FALSE
+              AND p.status='ACTIVE'
             GROUP BY dt.category, dt.label, p.name, dt.volume_liters
             HAVING COALESCE(SUM(e.quantity), 0) > 0
             ORDER BY dt.category ASC, dt.label ASC, litros DESC, unidades DESC, p.name ASC;
@@ -722,3 +777,169 @@ def deactivate_person(person_id: int):
         with conn.cursor() as cur:
             cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
             conn.commit()
+
+
+# -------------------------
+# ADMIN: Personas (histórico) + asignaciones manuales
+# -------------------------
+
+def list_persons_by_status(status: str):
+    status = status.upper()
+    if status not in ("NEW", "ACTIVE", "INACTIVE"):
+        raise ValueError("Estado inválido")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name, status, created_at
+            FROM persons
+            WHERE status=%s
+            ORDER BY name;
+            """, (status,))
+            return cur.fetchall()
+
+def list_persons_without_active_telegram():
+    """Plazas sin telegram activo (da igual el status)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT p.id, p.name, p.status, p.created_at
+            FROM persons p
+            LEFT JOIN person_accounts pa
+              ON pa.person_id = p.id AND pa.is_active = TRUE
+            WHERE pa.id IS NULL
+            ORDER BY p.name;
+            """)
+            return cur.fetchall()
+
+def search_persons_by_name(q: str, limit: int = 20):
+    q = (q or "").strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name, status, created_at
+            FROM persons
+            WHERE name ILIKE %s
+            ORDER BY name
+            LIMIT %s;
+            """, (like, limit))
+            return cur.fetchall()
+
+def get_person_profile(person_id: int):
+    """Devuelve ficha completa: persona + telegram activo + historico + stats."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name, status, created_at
+            FROM persons
+            WHERE id=%s;
+            """, (person_id,))
+            person = cur.fetchone()
+            if not person:
+                return None
+
+            cur.execute("""
+            SELECT telegram_user_id, assigned_at
+            FROM person_accounts
+            WHERE person_id=%s AND is_active=TRUE
+            ORDER BY assigned_at DESC
+            LIMIT 1;
+            """, (person_id,))
+            active_account = cur.fetchone()
+
+            cur.execute("""
+            SELECT telegram_user_id, assigned_at, unassigned_at
+            FROM person_accounts
+            WHERE person_id=%s AND is_active=FALSE
+            ORDER BY unassigned_at DESC NULLS LAST, assigned_at DESC;
+            """, (person_id,))
+            previous_accounts = cur.fetchall()
+
+            # Stats (NO anulados)
+            cur.execute("""
+            SELECT
+              COALESCE(COUNT(*),0) AS events_count,
+              MAX(consumed_at) AS last_activity_at
+            FROM drink_events
+            WHERE person_id=%s AND is_void=FALSE;
+            """, (person_id,))
+            stats = cur.fetchone() or {"events_count": 0, "last_activity_at": None}
+
+            return {
+                "person": person,
+                "active_account": active_account,
+                "previous_accounts": previous_accounts,
+                "stats": stats,
+            }
+
+def admin_assign_telegram_to_person(person_id: int, telegram_user_id: int):
+    """Asigna un telegram (pendiente o manual) a una persona. Reasigna si ya tenía otro."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Bloquea persona
+            cur.execute("SELECT id, status FROM persons WHERE id=%s FOR UPDATE;", (person_id,))
+            p = cur.fetchone()
+            if not p:
+                conn.rollback()
+                return ("NOT_FOUND", None)
+
+            # Si el telegram ya está asignado a otra persona activa, error
+            cur.execute("""
+            SELECT person_id
+            FROM person_accounts
+            WHERE telegram_user_id=%s AND is_active=TRUE
+            LIMIT 1;
+            """, (telegram_user_id,))
+            row = cur.fetchone()
+            if row and int(row["person_id"]) != int(person_id):
+                conn.rollback()
+                return ("TG_TAKEN", None)
+
+            # Desactiva asignación activa previa de la persona (si existía)
+            cur.execute("""
+            UPDATE person_accounts
+            SET is_active=FALSE, unassigned_at=now()
+            WHERE person_id=%s AND is_active=TRUE;
+            """, (person_id,))
+
+            # Inserta nueva asignación
+            cur.execute("""
+            INSERT INTO person_accounts(person_id, telegram_user_id, is_active)
+            VALUES (%s,%s,TRUE);
+            """, (person_id, telegram_user_id))
+
+            # La persona pasa a ACTIVE (aunque viniera INACTIVE)
+            cur.execute("UPDATE persons SET status='ACTIVE' WHERE id=%s;", (person_id,))
+
+            # Borra solicitud pendiente (si existía)
+            cur.execute("DELETE FROM pending_telegrams WHERE telegram_user_id=%s;", (telegram_user_id,))
+
+            conn.commit()
+            return ("OK", None)
+
+def admin_suspend_person(person_id: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+def admin_reactivate_person(person_id: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE persons SET status='ACTIVE' WHERE id=%s;", (person_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+def admin_delete_person(person_id: int) -> bool:
+    """Elimina persona/plaza y TODO lo asociado."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Borra dependencias primero
+            cur.execute("DELETE FROM drink_events WHERE person_id=%s;", (person_id,))
+            cur.execute("DELETE FROM person_accounts WHERE person_id=%s;", (person_id,))
+            cur.execute("DELETE FROM persons WHERE id=%s;", (person_id,))
+            conn.commit()
+            return cur.rowcount > 0
