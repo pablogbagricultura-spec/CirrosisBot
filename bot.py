@@ -574,7 +574,7 @@ if data == CB_PEOPLE_DELETE_NO:
     await q.edit_message_text("Vale, no toco nada 🙂", reply_markup=people_tabs_kb())
     return
 
-        return
+    return
 
     if data.startswith(CB_ADMIN_REMOVE_ID):
         if not is_admin(tg_id):
