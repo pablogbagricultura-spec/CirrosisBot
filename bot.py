@@ -18,9 +18,6 @@ from db import (
     person_year_breakdown,
     year_drinks_totals,
     year_drink_type_person_totals,
-    # --- NUEVO: admin people management ---
-    list_persons_admin, get_person_profile, suspend_person, reactivate_person,
-    reset_person_to_new, soft_delete_person,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -47,17 +44,6 @@ CB_YEAR = "year:"  # year:<year_start>
 CB_ADMIN_ADD = "admin:add"
 CB_ADMIN_REMOVE = "admin:remove"
 CB_ADMIN_REMOVE_ID = "admin:remove:"
-
-# --- NUEVO: Gestión de personas (admin) ---
-CB_ADMIN_PEOPLE = "admin:people"
-CB_PEOPLE_TAB = "people:tab:"           # people:tab:ACTIVE|INACTIVE|NEW|DELETED
-CB_PEOPLE_VIEW = "people:view:"         # people:view:<person_id>
-CB_PEOPLE_SUSPEND = "people:suspend:"   # people:suspend:<person_id>
-CB_PEOPLE_REACTIVATE = "people:react:"  # people:react:<person_id>
-CB_PEOPLE_RESET = "people:reset:"       # people:reset:<person_id>
-CB_PEOPLE_DELETE = "people:delete:"     # people:delete:<person_id>
-CB_PEOPLE_DELETE_YES = "people:delete_yes:"
-CB_PEOPLE_DELETE_NO = "people:delete_no"
 
 def kb(rows):
     return InlineKeyboardMarkup(rows)
@@ -129,7 +115,7 @@ def years_kb(years):
 def admin_kb():
     return kb([
         [InlineKeyboardButton("➕ Añadir persona", callback_data=CB_ADMIN_ADD)],
-        [InlineKeyboardButton("👥 Gestionar personas", callback_data=CB_ADMIN_PEOPLE)],
+        [InlineKeyboardButton("➖ Desactivar persona", callback_data=CB_ADMIN_REMOVE)],
         [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
     ])
 
@@ -137,41 +123,6 @@ def admin_remove_kb(persons):
     rows = [[InlineKeyboardButton(p["name"], callback_data=f"{CB_ADMIN_REMOVE_ID}{p['id']}")] for p in persons]
     rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)])
     return kb(rows)
-
-# --- NUEVO: teclados gestión de personas ---
-def people_tabs_kb():
-    return kb([
-        [InlineKeyboardButton("✅ Activas", callback_data=f"{CB_PEOPLE_TAB}ACTIVE")],
-        [InlineKeyboardButton("⛔ Suspendidas", callback_data=f"{CB_PEOPLE_TAB}INACTIVE")],
-        [InlineKeyboardButton("🆕 Nuevas", callback_data=f"{CB_PEOPLE_TAB}NEW")],
-        [InlineKeyboardButton("🗑️ Eliminadas", callback_data=f"{CB_PEOPLE_TAB}DELETED")],
-        [InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)],
-    ])
-
-def people_list_kb(persons):
-    rows = [[InlineKeyboardButton(f"{p['name']}", callback_data=f"{CB_PEOPLE_VIEW}{p['id']}")] for p in persons]
-    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_ADMIN_PEOPLE)])
-    return kb(rows)
-
-def person_actions_kb(profile):
-    pid = profile["id"]
-    rows = []
-    if not profile.get("is_deleted"):
-        if profile.get("status") == "ACTIVE":
-            rows.append([InlineKeyboardButton("⛔ Suspender", callback_data=f"{CB_PEOPLE_SUSPEND}{pid}")])
-        elif profile.get("status") == "INACTIVE":
-            rows.append([InlineKeyboardButton("✅ Reactivar", callback_data=f"{CB_PEOPLE_REACTIVATE}{pid}")])
-
-        rows.append([InlineKeyboardButton("♻️ Reset a NEW (liberar TG)", callback_data=f"{CB_PEOPLE_RESET}{pid}")])
-        rows.append([InlineKeyboardButton("🗑️ Eliminar (soft)", callback_data=f"{CB_PEOPLE_DELETE}{pid}")])
-    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=CB_ADMIN_PEOPLE)])
-    return kb(rows)
-
-def confirm_delete_kb(pid: int):
-    return kb([
-        [InlineKeyboardButton("💀 Sí, eliminar", callback_data=f"{CB_PEOPLE_DELETE_YES}{pid}")],
-        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_PEOPLE_DELETE_NO)],
-    ])
 
 def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None = None):
     context.user_data["state"] = state
@@ -239,15 +190,19 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
     lines.append("")
     lines.append("🏆 Top del mes:")
 
+    # Top 3 por euros (ya viene ordenado)
     top = [r for r in rows if int(r["unidades"]) > 0][:3]
     if not top:
         lines.append("• Nadie ha apuntado nada este mes 😇")
     else:
         for i, r in enumerate(top, 1):
-            lines.append(f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €")
+            lines.append(
+                f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €"
+            )
 
     msg = "\n".join(lines)
 
+    # Enviar a todos los usuarios activos
     bot = context.bot
     for chat_id in list_active_telegram_user_ids():
         try:
@@ -255,11 +210,14 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # Estadísticas vergonzosas
+    # --- Estadísticas vergonzosas (mensaje aparte, público) ---
+    # (IMPORTANTE: esto va DENTRO del async def)
     try:
         shame = monthly_shame_report(y, m)
     except Exception:
         shame = None
+
+    # Regla: mínimo 2 personas con consumo en el mes
 
     active_people = sum(1 for r in rows if int(r["unidades"]) > 0)
 
@@ -308,7 +266,6 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
                     await bot.send_message(chat_id=chat_id, text=msg2)
                 except Exception:
                     pass
-
 # --------- Handlers ---------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -333,96 +290,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=persons_kb(available),
     )
     set_state(context, "PICK_PERSON", {})
-
-async def _handle_admin_people_callbacks(q, tg_id: int, data: str, context: ContextTypes.DEFAULT_TYPE):
-    """Router de gestión de personas. Importante: se llama DENTRO de handle_callback."""
-    if not is_admin(tg_id):
-        await q.edit_message_text("🚫 No tienes permisos.", reply_markup=menu_kb(False))
-        return True  # handled
-
-    if data == CB_ADMIN_PEOPLE:
-        await q.edit_message_text("👥 Gestión de personas\n\nElige un listado:", reply_markup=people_tabs_kb())
-        set_state(context, "ADMIN_PEOPLE", {})
-        return True
-
-    if data.startswith(CB_PEOPLE_TAB):
-        tab = data.split(":", 2)[2]
-        if tab == "DELETED":
-            persons = list_persons_admin(status=None, is_deleted=True)
-        else:
-            persons = list_persons_admin(status=tab, is_deleted=False)
-
-        title_map = {
-            "ACTIVE": "✅ Activas",
-            "INACTIVE": "⛔ Suspendidas",
-            "NEW": "🆕 Nuevas (sin asignar)",
-            "DELETED": "🗑️ Eliminadas",
-        }
-        title = title_map.get(tab, "Personas")
-        if not persons:
-            await q.edit_message_text(f"{title}\n\n(No hay personas en este listado)", reply_markup=people_tabs_kb())
-            return True
-
-        await q.edit_message_text(f"{title}\n\nElige una persona:", reply_markup=people_list_kb(persons))
-        return True
-
-    if data.startswith(CB_PEOPLE_VIEW):
-        pid = int(data.split(":", 2)[2])
-        prof = get_person_profile(pid)
-        if not prof:
-            await q.edit_message_text("No encontrada.", reply_markup=people_tabs_kb())
-            return True
-
-        lines = [f"👤 {prof['name']} (id={prof['id']})"]
-        lines.append(f"• status: {prof['status']}")
-        lines.append(f"• deleted: {'YES' if prof['is_deleted'] else 'NO'}")
-        lines.append(f"• TG activo: {prof.get('active_telegram_user_id') or '—'}")
-        lines.append(f"• eventos: {prof.get('event_count', 0)}")
-        if prof.get("deleted_at"):
-            lines.append(f"• deleted_at: {prof['deleted_at']}")
-
-        await q.edit_message_text("\n".join(lines), reply_markup=person_actions_kb(prof))
-        return True
-
-    if data.startswith(CB_PEOPLE_SUSPEND):
-        pid = int(data.split(":", 2)[2])
-        ok = suspend_person(pid, tg_id)
-        await q.edit_message_text("✅ Suspendido (y Telegram liberado)." if ok else "⚠️ No se pudo suspender.", reply_markup=people_tabs_kb())
-        return True
-
-    if data.startswith(CB_PEOPLE_REACTIVATE):
-        pid = int(data.split(":", 2)[2])
-        ok = reactivate_person(pid)
-        await q.edit_message_text("✅ Reactivado." if ok else "⚠️ No se pudo reactivar.", reply_markup=people_tabs_kb())
-        return True
-
-    if data.startswith(CB_PEOPLE_RESET):
-        pid = int(data.split(":", 2)[2])
-        ok, msg = reset_person_to_new(pid, tg_id)
-        await q.edit_message_text("✅ Reseteado a NEW y Telegram liberado." if ok else f"⚠️ No se pudo: {msg}", reply_markup=people_tabs_kb())
-        return True
-
-    if data.startswith(CB_PEOPLE_DELETE) and not data.startswith(CB_PEOPLE_DELETE_YES):
-        pid = int(data.split(":", 2)[2])
-        await q.edit_message_text(
-            "⚠️ Esto marca a la persona como ELIMINADA (soft delete).\n"
-            "No podrá volver a asignarse y desaparecerá de informes.\n\n"
-            "¿Confirmas?",
-            reply_markup=confirm_delete_kb(pid),
-        )
-        return True
-
-    if data.startswith(CB_PEOPLE_DELETE_YES):
-        pid = int(data.split(":", 2)[2])
-        ok = soft_delete_person(pid, tg_id)
-        await q.edit_message_text("💀 Eliminada (soft delete)." if ok else "⚠️ No se pudo eliminar.", reply_markup=people_tabs_kb())
-        return True
-
-    if data == CB_PEOPLE_DELETE_NO:
-        await q.edit_message_text("Vale, no toco nada 🙂", reply_markup=people_tabs_kb())
-        return True
-
-    return False  # not handled
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -458,11 +325,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "back:qty":
+        # Volver desde FECHA -> CANTIDAD
         await q.edit_message_text("¿Cuántas has tomado?", reply_markup=qty_kb())
+
+        # Copia de seguridad del estado para no tocar el original
         sdata2 = dict(sdata)
+
+        # Si había una cantidad previa, la borramos para forzar a elegir otra
         sdata2.pop("qty", None)
+
+        # Volvemos al paso de cantidad
         set_state(context, "ADD_QTY", sdata2)
         return
+
+
 
     # -------- REGISTRO PERSONA --------
     if data.startswith(CB_PICK_PERSON):
@@ -521,13 +397,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADMIN", {})
         return
 
-    # ---- NUEVO: router gestión de personas (admin) ----
-    if data == CB_ADMIN_PEOPLE or data.startswith("people:"):
-        handled = await _handle_admin_people_callbacks(q, tg_id, data, context)
-        if handled:
-            return
-
-    # ---- Admin legacy: añadir persona (por texto) ----
     if data == CB_ADMIN_ADD:
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.")
@@ -536,7 +405,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADMIN_ADD", {})
         return
 
-    # ---- Admin legacy: desactivar persona (suspender) ----
     if data == CB_ADMIN_REMOVE:
         if not is_admin(tg_id):
             await q.edit_message_text("🚫 No tienes permisos.")
@@ -568,6 +436,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("🚫 No estás registrado. Usa /start.")
             return
 
+        # -------- Helpers de formato --------
         def fmt_units(n): 
             return f"{int(n)} uds"
 
@@ -577,11 +446,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def fmt_eur(x): 
             return f"{float(x):.2f} €"
 
+        # -------- Datos --------
         personal_rows = person_year_breakdown(person["id"], y)
         year_rows = report_year(y)
         drinks_year = year_drinks_totals(y)
         per_type_people = year_drink_type_person_totals(y)
 
+        # -------- Construcción mensaje --------
         lines = [f"📊 Informe {y}-{y+1}", "", "👤 Tu informe personal (solo tú)", person["name"], ""]
 
         beers = [r for r in personal_rows if r["category"] == "BEER"]
@@ -604,6 +475,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if others:
             lines.append("🥃 Otros")
             for r in others:
+                # si NO quieres euros aquí, quita "· {fmt_eur...}"
                 lines.append(f"• {r['label']} — {fmt_units(r['unidades'])} · {fmt_eur(r['euros'])}")
             ou = sum(int(r["unidades"]) for r in others)
             oe = sum(float(r["euros"]) for r in others)
@@ -722,11 +594,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             consumed_at=consumed_at,
         )
 
+        # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
         base_msg = random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when})."
         await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
+        # Logros (si toca)
         year_start = (dt.date(consumed_at.year, 1, 7) <= consumed_at) and consumed_at.year or (consumed_at.year - 1)
         totals = get_person_year_totals(person["id"], int(year_start))
         after_units = int(totals["unidades"])
@@ -762,7 +636,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == CB_UNDO_CANCEL:
         person = get_assigned_person(tg_id)
         await q.edit_message_text(
-            "Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
+            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
             reply_markup=menu_kb(is_admin(tg_id)),
         )
         set_state(context, "MENU", {})
@@ -811,6 +685,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
+        # Logros
         year_start = (dt.date(consumed_at.year, 1, 7) <= consumed_at) and consumed_at.year or (consumed_at.year - 1)
         totals = get_person_year_totals(person["id"], int(year_start))
         after_units = int(totals["unidades"])
@@ -824,6 +699,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
+    # ADMIN: añadir persona por texto
     if state == "ADMIN_ADD":
         if not is_admin(tg_id):
             await update.message.reply_text("🚫 No tienes permisos.")
@@ -845,6 +721,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # JobQueue: comprobar cada día y si es día 1 envía resumen del mes anterior
     app.job_queue.run_daily(
         monthly_summary_job,
         time=dt.time(hour=9, minute=0, tzinfo=TZ),
