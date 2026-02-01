@@ -39,12 +39,15 @@ def init_db():
             # PERSONAS
             cur.execute("""
             CREATE TABLE IF NOT EXISTS persons (
-              id SERIAL PRIMARY KEY,
-              name TEXT NOT NULL UNIQUE,
-              status TEXT NOT NULL CHECK (status IN ('NEW','ACTIVE','INACTIVE')),
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """)
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('NEW','ACTIVE','INACTIVE')),
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_at TIMESTAMPTZ,
+  deleted_by_telegram_user_id BIGINT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+""")
 
             # ASIGNACIÓN persona <-> telegram
             cur.execute("""
@@ -157,7 +160,10 @@ def get_assigned_person(telegram_user_id: int):
             SELECT p.id, p.name
             FROM person_accounts pa
             JOIN persons p ON p.id = pa.person_id
-            WHERE pa.telegram_user_id = %s AND pa.is_active = TRUE
+            WHERE pa.telegram_user_id = %s
+              AND pa.is_active = TRUE
+              AND p.status = 'ACTIVE'
+              AND p.is_deleted = FALSE
             LIMIT 1;
             """, (telegram_user_id,))
             return cur.fetchone()
@@ -168,7 +174,7 @@ def list_available_persons():
             cur.execute("""
             SELECT id, name
             FROM persons
-            WHERE status='NEW'
+            WHERE status='NEW' AND is_deleted=FALSE
             ORDER BY name;
             """)
             return cur.fetchall()
@@ -181,9 +187,9 @@ def assign_person(telegram_user_id: int, person_id: int):
     with get_conn() as conn:
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, name, status FROM persons WHERE id=%s FOR UPDATE;", (person_id,))
+                cur.execute("SELECT id, name, status, is_deleted FROM persons WHERE id=%s FOR UPDATE;", (person_id,))
                 row = cur.fetchone()
-                if not row or row["status"] != "NEW":
+                if (not row) or row.get("is_deleted") or row["status"] != "NEW":
                     conn.rollback()
                     return ("TAKEN", None)
 
@@ -205,9 +211,12 @@ def list_active_telegram_user_ids():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT DISTINCT telegram_user_id
-            FROM person_accounts
-            WHERE is_active=TRUE;
+            SELECT DISTINCT pa.telegram_user_id
+            FROM person_accounts pa
+            JOIN persons p ON p.id = pa.person_id
+            WHERE pa.is_active=TRUE
+              AND p.status='ACTIVE'
+              AND p.is_deleted=FALSE;
             """)
             return [r["telegram_user_id"] for r in cur.fetchall()]
 
@@ -311,6 +320,7 @@ def report_year(year_start: int):
             FROM persons p
             LEFT JOIN drink_events e
               ON e.person_id=p.id AND e.year_start=%s AND e.is_void=FALSE
+            WHERE p.is_deleted=FALSE
             GROUP BY p.name
             ORDER BY euros DESC, litros DESC, unidades DESC;
             """, (year_start,))
@@ -365,6 +375,7 @@ def month_summary(year: int, month: int):
              AND e.is_void=FALSE
              AND e.consumed_at >= %s
              AND e.consumed_at < %s
+            WHERE p.is_deleted=FALSE
             GROUP BY p.name
             ORDER BY euros DESC, litros DESC, unidades DESC;
             """, (start, end))
@@ -423,7 +434,7 @@ def monthly_shame_report(year: int, month: int, close_liters: float = 0.5):
             SELECT DISTINCT p.id AS person_id, p.name AS name
             FROM drink_events e
             JOIN persons p ON p.id = e.person_id
-            WHERE e.is_void=FALSE
+            WHERE p.is_deleted=FALSE AND e.is_void=FALSE
               AND e.consumed_at >= %s
               AND e.consumed_at < %s
             ORDER BY p.name;
@@ -460,7 +471,7 @@ def monthly_shame_report(year: int, month: int, close_liters: float = 0.5):
                 p.name AS name,
                 COALESCE(d.liters, 0)::numeric AS liters
               FROM calendar c
-              CROSS JOIN (SELECT id, name FROM persons WHERE id = ANY(%s)) p
+              CROSS JOIN (SELECT id, name FROM persons WHERE id = ANY(%s) AND is_deleted=FALSE) p
               LEFT JOIN daily d
                 ON d.person_id = p.id AND d.day = c.day
             )
@@ -676,7 +687,7 @@ def year_drink_type_person_totals(year_start: int):
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             JOIN persons p ON p.id = e.person_id
-            WHERE e.year_start = %s
+            WHERE p.is_deleted=FALSE AND e.year_start = %s
               AND e.is_void = FALSE
             GROUP BY dt.category, dt.label, p.name, dt.volume_liters
             HAVING COALESCE(SUM(e.quantity), 0) > 0
@@ -688,6 +699,135 @@ def year_drink_type_person_totals(year_start: int):
 # -------------------------
 # ADMIN (opción B)
 # -------------------------
+def unassign_active_account(person_id: int) -> bool:
+    """Desactiva la asignación activa (si existe) de una persona. No cambia el status."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            UPDATE person_accounts
+            SET is_active=FALSE, unassigned_at=now()
+            WHERE person_id=%s AND is_active=TRUE
+            RETURNING id;
+            """, (person_id,))
+            row = cur.fetchone()
+            conn.commit()
+            return row is not None
+
+def person_event_count(person_id: int) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT COUNT(*) AS c
+            FROM drink_events
+            WHERE person_id=%s AND is_void=FALSE;
+            """, (person_id,))
+            return int(cur.fetchone()["c"])
+
+def get_person_profile(person_id: int):
+    """Devuelve info para el panel admin."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT id, name, status, is_deleted, deleted_at, deleted_by_telegram_user_id
+            FROM persons
+            WHERE id=%s
+            LIMIT 1;
+            """, (person_id,))
+            p = cur.fetchone()
+            if not p:
+                return None
+            cur.execute("""
+            SELECT telegram_user_id
+            FROM person_accounts
+            WHERE person_id=%s AND is_active=TRUE
+            LIMIT 1;
+            """, (person_id,))
+            a = cur.fetchone()
+            p["active_telegram_user_id"] = a["telegram_user_id"] if a else None
+            p["event_count"] = person_event_count(person_id)
+            return p
+
+def list_persons_admin(status: str | None = None, is_deleted: bool | None = None):
+    """Lista personas para admin."""
+    q = "SELECT id, name, status, is_deleted FROM persons WHERE 1=1"
+    params = []
+    if status is not None:
+        q += " AND status=%s"
+        params.append(status)
+    if is_deleted is not None:
+        q += " AND is_deleted=%s"
+        params.append(is_deleted)
+    q += " ORDER BY name ASC"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, tuple(params))
+            return cur.fetchall()
+
+def suspend_person(person_id: int, admin_telegram_user_id: int | None = None) -> bool:
+    """Suspende (INACTIVE) y desasigna Telegram activo, conservando histórico."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            UPDATE persons
+            SET status='INACTIVE'
+            WHERE id=%s AND is_deleted=FALSE
+            RETURNING id;
+            """, (person_id,))
+            ok = cur.fetchone() is not None
+            conn.commit()
+    if ok:
+        unassign_active_account(person_id)
+    return ok
+
+def reactivate_person(person_id: int) -> bool:
+    """Reactiva una persona suspendida (no reasigna Telegram)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            UPDATE persons
+            SET status='ACTIVE'
+            WHERE id=%s AND is_deleted=FALSE
+            RETURNING id;
+            """, (person_id,))
+            row = cur.fetchone()
+            conn.commit()
+            return row is not None
+
+def reset_person_to_new(person_id: int, admin_telegram_user_id: int | None = None) -> tuple[bool, str]:
+    """Devuelve la persona a NEW y la deja sin Telegram. Solo si no tiene eventos."""
+    if person_event_count(person_id) > 0:
+        return (False, "La persona tiene eventos; no se puede resetear a NEW sin perder histórico.")
+    unassign_active_account(person_id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            UPDATE persons
+            SET status='NEW'
+            WHERE id=%s AND is_deleted=FALSE
+            RETURNING id;
+            """, (person_id,))
+            row = cur.fetchone()
+            conn.commit()
+            return (row is not None, "OK" if row else "No encontrada o eliminada.")
+
+def soft_delete_person(person_id: int, admin_telegram_user_id: int) -> bool:
+    """Elimina (soft delete) de forma irreversible desde el bot. No borra eventos."""
+    unassign_active_account(person_id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            UPDATE persons
+            SET is_deleted=TRUE,
+                status='INACTIVE',
+                deleted_at=now(),
+                deleted_by_telegram_user_id=%s
+            WHERE id=%s AND is_deleted=FALSE
+            RETURNING id;
+            """, (admin_telegram_user_id, person_id))
+            row = cur.fetchone()
+            conn.commit()
+            return row is not None
+
 
 def is_admin(telegram_user_id: int) -> bool:
     p = get_assigned_person(telegram_user_id)
@@ -712,13 +852,12 @@ def list_active_persons():
             cur.execute("""
             SELECT id, name
             FROM persons
-            WHERE status='ACTIVE'
+            WHERE status='ACTIVE' AND is_deleted=FALSE
             ORDER BY name;
             """)
             return cur.fetchall()
 
 def deactivate_person(person_id: int):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE persons SET status='INACTIVE' WHERE id=%s;", (person_id,))
-            conn.commit()
+    """Alias de suspensión: inactiva la persona y desasigna su Telegram activo."""
+    suspend_person(person_id)
+

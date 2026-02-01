@@ -11,6 +11,8 @@ from db import (
     list_drink_types, insert_event, list_last_events, void_event,
     list_years_with_data, report_year,
     is_admin, add_person, list_active_persons, deactivate_person,
+    list_persons_admin, get_person_profile, suspend_person, reactivate_person,
+    reset_person_to_new, soft_delete_person,
     get_person_year_totals, is_first_event_of_year,
     list_active_telegram_user_ids,
     month_summary, monthly_summary_already_sent, mark_monthly_summary_sent,
@@ -44,6 +46,16 @@ CB_YEAR = "year:"  # year:<year_start>
 CB_ADMIN_ADD = "admin:add"
 CB_ADMIN_REMOVE = "admin:remove"
 CB_ADMIN_REMOVE_ID = "admin:remove:"
+
+CB_ADMIN_PEOPLE = "admin:people"
+CB_PEOPLE_TAB = "people:tab:"  # people:tab:ACTIVE|INACTIVE|NEW|DELETED
+CB_PEOPLE_VIEW = "people:view:"  # people:view:<person_id>
+CB_PEOPLE_SUSPEND = "people:suspend:"
+CB_PEOPLE_REACTIVATE = "people:react:"
+CB_PEOPLE_RESET = "people:reset:"
+CB_PEOPLE_DELETE = "people:delete:"
+CB_PEOPLE_DELETE_YES = "people:delete_yes:"
+CB_PEOPLE_DELETE_NO = "people:delete_no"
 
 def kb(rows):
     return InlineKeyboardMarkup(rows)
@@ -115,8 +127,43 @@ def years_kb(years):
 def admin_kb():
     return kb([
         [InlineKeyboardButton("➕ Añadir persona", callback_data=CB_ADMIN_ADD)],
-        [InlineKeyboardButton("➖ Desactivar persona", callback_data=CB_ADMIN_REMOVE)],
+        [InlineKeyboardButton("👥 Gestionar personas", callback_data=CB_ADMIN_PEOPLE)],
         [InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")],
+    ])
+
+
+def people_tabs_kb():
+    return kb([
+        [InlineKeyboardButton("✅ Activas", callback_data=f"{CB_PEOPLE_TAB}ACTIVE")],
+        [InlineKeyboardButton("⛔ Suspendidas", callback_data=f"{CB_PEOPLE_TAB}INACTIVE")],
+        [InlineKeyboardButton("🆕 Nuevas", callback_data=f"{CB_PEOPLE_TAB}NEW")],
+        [InlineKeyboardButton("🗑️ Eliminadas", callback_data=f"{CB_PEOPLE_TAB}DELETED")],
+        [InlineKeyboardButton("⬅️ Atrás", callback_data=CB_MENU_ADMIN)],
+    ])
+
+def people_list_kb(persons, back_cb=CB_ADMIN_PEOPLE):
+    rows = [[InlineKeyboardButton(f"{p['name']}", callback_data=f"{CB_PEOPLE_VIEW}{p['id']}")] for p in persons]
+    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=back_cb)])
+    return kb(rows)
+
+def person_actions_kb(profile):
+    pid = profile["id"]
+    rows = []
+    if not profile.get("is_deleted"):
+        if profile.get("status") == "ACTIVE":
+            rows.append([InlineKeyboardButton("⛔ Suspender", callback_data=f"{CB_PEOPLE_SUSPEND}{pid}")])
+        elif profile.get("status") == "INACTIVE":
+            rows.append([InlineKeyboardButton("✅ Reactivar", callback_data=f"{CB_PEOPLE_REACTIVATE}{pid}")])
+
+        rows.append([InlineKeyboardButton("♻️ Reset a NEW (liberar TG)", callback_data=f"{CB_PEOPLE_RESET}{pid}")])
+        rows.append([InlineKeyboardButton("🗑️ Eliminar (soft)", callback_data=f"{CB_PEOPLE_DELETE}{pid}")])
+    rows.append([InlineKeyboardButton("⬅️ Atrás", callback_data=f"{CB_PEOPLE_TAB}{profile.get('status','ACTIVE')}")])
+    return kb(rows)
+
+def confirm_delete_kb(pid: int):
+    return kb([
+        [InlineKeyboardButton("💀 Sí, eliminar", callback_data=f"{CB_PEOPLE_DELETE_YES}{pid}")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_PEOPLE_DELETE_NO)],
     ])
 
 def admin_remove_kb(persons):
@@ -415,6 +462,118 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text("¿A quién quieres desactivar?", reply_markup=admin_remove_kb(persons))
         set_state(context, "ADMIN_REMOVE", {})
+
+if data == CB_ADMIN_PEOPLE:
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    await q.edit_message_text("👥 Gestión de personas\n\nElige un listado:", reply_markup=people_tabs_kb())
+    set_state(context, "ADMIN_PEOPLE", {})
+    return
+
+if data.startswith(CB_PEOPLE_TAB):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    tab = data.split(":", 2)[2]
+
+    if tab == "DELETED":
+        persons = list_persons_admin(status=None, is_deleted=True)
+    else:
+        persons = list_persons_admin(status=tab, is_deleted=False)
+
+    title_map = {
+        "ACTIVE": "✅ Activas",
+        "INACTIVE": "⛔ Suspendidas",
+        "NEW": "🆕 Nuevas (sin asignar)",
+        "DELETED": "🗑️ Eliminadas",
+    }
+    title = title_map.get(tab, "Personas")
+    if not persons:
+        await q.edit_message_text(f"{title}\n\n(No hay personas en este listado)", reply_markup=people_tabs_kb())
+        return
+    await q.edit_message_text(f"{title}\n\nElige una persona:", reply_markup=people_list_kb(persons, back_cb=CB_ADMIN_PEOPLE))
+    set_state(context, "ADMIN_PEOPLE_LIST", {"tab": tab})
+    return
+
+if data.startswith(CB_PEOPLE_VIEW):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    prof = get_person_profile(pid)
+    if not prof:
+        await q.edit_message_text("No encontrada.", reply_markup=people_tabs_kb())
+        return
+
+    lines = [f"👤 {prof['name']} (id={prof['id']})"]
+    lines.append(f"• status: {prof['status']}")
+    lines.append(f"• deleted: {'YES' if prof['is_deleted'] else 'NO'}")
+    if prof.get("active_telegram_user_id"):
+        lines.append(f"• TG activo: {prof['active_telegram_user_id']}")
+    else:
+        lines.append("• TG activo: —")
+    lines.append(f"• eventos: {prof.get('event_count', 0)}")
+    if prof.get("deleted_at"):
+        lines.append(f"• deleted_at: {prof['deleted_at']}")
+    await q.edit_message_text("\n".join(lines), reply_markup=person_actions_kb(prof))
+    set_state(context, "ADMIN_PERSON", {"person_id": pid})
+    return
+
+if data.startswith(CB_PEOPLE_SUSPEND):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    ok = suspend_person(pid, tg_id)
+    await q.edit_message_text("✅ Suspendido (y Telegram liberado)." if ok else "⚠️ No se pudo suspender.", reply_markup=people_tabs_kb())
+    return
+
+if data.startswith(CB_PEOPLE_REACTIVATE):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    ok = reactivate_person(pid)
+    await q.edit_message_text("✅ Reactivado." if ok else "⚠️ No se pudo reactivar.", reply_markup=people_tabs_kb())
+    return
+
+if data.startswith(CB_PEOPLE_RESET):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    ok, msg = reset_person_to_new(pid, tg_id)
+    await q.edit_message_text("✅ Reseteado a NEW y Telegram liberado." if ok else f"⚠️ No se pudo: {msg}", reply_markup=people_tabs_kb())
+    return
+
+if data.startswith(CB_PEOPLE_DELETE):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    await q.edit_message_text(
+        "⚠️ Esto marca a la persona como ELIMINADA (soft delete).\nNo podrá volver a asignarse y desaparecerá de informes.\n\n¿Confirmas?",
+        reply_markup=confirm_delete_kb(pid),
+    )
+    return
+
+if data.startswith(CB_PEOPLE_DELETE_YES):
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    pid = int(data.split(":", 2)[2])
+    ok = soft_delete_person(pid, tg_id)
+    await q.edit_message_text("💀 Eliminada (soft delete)." if ok else "⚠️ No se pudo eliminar.", reply_markup=people_tabs_kb())
+    return
+
+if data == CB_PEOPLE_DELETE_NO:
+    if not is_admin(tg_id):
+        await q.edit_message_text("🚫 No tienes permisos.")
+        return
+    await q.edit_message_text("Vale, no toco nada 🙂", reply_markup=people_tabs_kb())
+    return
+
         return
 
     if data.startswith(CB_ADMIN_REMOVE_ID):
