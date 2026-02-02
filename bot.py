@@ -160,10 +160,10 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        # consumed_at = fecha consumida; created_at = hora a la que se registró en el bot
+        # Fecha consumida + hora real del registro
         day = e["consumed_at"].strftime("%d/%m/%Y")
         try:
-            tm = e["created_at"].astimezone(TZ).strftime("%H:%M")
+            tm = e["created_at"].strftime("%H:%M")
         except Exception:
             tm = "--:--"
         label = f"{day} {tm} — {e['label']} — x{e['quantity']}"
