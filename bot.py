@@ -52,6 +52,7 @@ CB_MENU_ADMIN = "menu:admin"
 CB_MENU_PANEL = "menu:panel"
 
 CB_PANEL_MENU = "panel:menu"
+CB_PANEL_HOME = "panel:home"
 CB_PANEL_DRINKS = "panel:drinks"
 CB_PANEL_OLDER = "panel:older:"  # panel:older:<cursor_id>
 CB_PANEL_NEWER = "panel:newer:"  # panel:newer:<cursor_id>
@@ -101,7 +102,7 @@ def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
         [InlineKeyboardButton("↩️ Deshacer bebidas", callback_data=CB_MENU_UNDO)],
-        [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
+        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)],
     ]
     return kb(rows)
 
@@ -114,7 +115,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
     return kb(rows)
 
 def format_event_line(ev):
@@ -160,24 +161,21 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        ts = e["created_at"].astimezone(TZ)
-        stamp = ts.strftime("%d/%m %H:%M")
-        label = f'{stamp} — {e["label"]} — x{e["quantity"]}'
+        when = e["consumed_at"].strftime("%d/%m/%Y")
+        label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
-    # Volver al panel de usuario (no al menú principal)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
     return kb(rows)
-
 
 def undo_confirm_kb(event_id: int):
     return kb([
         [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_UNDO_CONFIRM}{event_id}")],
-        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_UNDO_CANCEL)],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_PANEL_HOME)],
     ])
 
 def years_kb(years):
     rows = [[InlineKeyboardButton(f"{y}-{y+1}", callback_data=f"{CB_YEAR}{y}")] for y in years]
-    rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
     return kb(rows)
 
 def admin_main_kb():
@@ -398,7 +396,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
             reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
     # No asignado -> solicitud pendiente (no hay auto-asignación)
@@ -447,9 +445,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-            reply_markup=user_panel_kb(),
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
     if data == "back:cat":
@@ -490,17 +488,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADD_CAT", {})
         return
 
-    if data == CB_MENU_UNDO:
-        person = get_assigned_person(tg_id)
-        events = list_last_events(person["id"], 10)
-        if not events:
-            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=user_panel_kb())
-            set_state(context, "PANEL", {})
-            return
-        await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
-        set_state(context, "UNDO_PICK", {})
-        return
-
     if data == CB_MENU_REPORT:
         years = list_years_with_data()
         if not years:
@@ -511,9 +498,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "REPORT_PICK_YEAR", {})
         return
 
-
 # -------- PANEL USUARIO --------
-    if data == CB_MENU_PANEL or data == CB_PANEL_MENU:
+    if data == CB_MENU_PANEL or data == CB_PANEL_HOME:
         person = get_assigned_person(tg_id)
         if not person:
             await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
@@ -1050,16 +1036,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         person = get_assigned_person(tg_id)
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
-            "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
+            "✅ Entrada eliminada.",
             reply_markup=user_panel_kb(),
         )
         set_state(context, "PANEL", {})
         return
 
     if data == CB_UNDO_CANCEL:
-        person = get_assigned_person(tg_id)
         await q.edit_message_text(
-            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
+            "Vale, no toco nada 🙂",
             reply_markup=user_panel_kb(),
         )
         set_state(context, "PANEL", {})
@@ -1173,14 +1158,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ No se pudo eliminar (¿ya no existe?).", reply_markup=admin_main_kb())
         set_state(context, "ADMIN", {})
-        return
-
-        ok = add_person(text)
-        if ok:
-            await update.message.reply_text(f"✅ '{text}' añadido como nueva persona.", reply_markup=menu_kb(True))
-        else:
-            await update.message.reply_text("⚠️ No se pudo añadir (¿ya existe?).", reply_markup=menu_kb(True))
-        set_state(context, "MENU", {})
         return
 
     if state == "SUSPENDED":
