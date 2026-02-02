@@ -20,6 +20,7 @@ from db import (
     list_years_with_data, report_year,
     get_person_year_totals, is_first_event_of_year,
     month_summary, monthly_summary_already_sent, mark_monthly_summary_sent,
+    get_person_day_units, list_person_consumed_dates,
     monthly_shame_report,
     person_year_breakdown,
     year_drinks_totals,
@@ -250,17 +251,90 @@ def set_state(context: ContextTypes.DEFAULT_TYPE, state: str, data: dict | None 
 def get_state(context: ContextTypes.DEFAULT_TYPE):
     return context.user_data.get("state"), context.user_data.get("data", {})
 
+def compute_streak_days(dates_desc, end_day: dt.date) -> int:
+    """Racha de días consecutivos con al menos un registro, acabando en end_day."""
+    if not dates_desc:
+        return 0
+    s = 0
+    expected = end_day
+    for d in dates_desc:
+        if d == expected:
+            s += 1
+            expected = expected - dt.timedelta(days=1)
+            continue
+        if d < expected:
+            break
+    return s
+
+
 # --------- Logros / frases ---------
 
 MILESTONES_UNITS = [1, 50, 100, 200, 500]
 
-FUN_PHRASES = [
-    "🍻 Apuntado. Esto va cogiendo ritmo…",
-    "✅ Hecho. La ciencia avanza.",
-    "📌 Guardado. La libreta de la vergüenza no perdona.",
-    "😄 Apuntado. Nadie te juzga (bueno… un poco).",
-    "✅ Listo. CirrosisBot lo ha visto todo.",
+NORMAL_ROAST_PHRASES = [
+    '🍻 Apuntado. Otro paso firme en la dirección equivocada.',
+    '✅ Guardado. No era necesario… por eso lo has hecho.',
+    '📌 Registrado. La moderación te saluda desde lejos.',
+    '😌 Hecho. Tu autocontrol hoy ha pedido teletrabajo.',
+    '🧾 Anotado. Sigues siendo constante, en lo que no conviene.',
+    '🧠 Confirmado. Has vuelto a elegir ‘pan para hoy, resaca para mañana’.',
+    '📉 Apuntado. Buenas decisiones: 0. Tú: 1.',
+    '🎭 Registrado. Excelente actuación: ‘yo controlo’.',
+    '🧯 Guardado. Esto ya no es apagar fuegos: es iniciarlos.',
+    '🏳️ Hecho. Te has rendido rápido, como siempre que toca frenar.',
+    '🫠 Apuntado. Otra victoria aplastante… contra tu coherencia.',
+    '📣 Confirmado. Nadie te obligó. Eso es lo más preocupante.',
 ]
+
+STREAK_ROAST_PHRASES = [
+    '📆 Racha activa. La constancia que no tienes para mejorar, pero aquí sí.',
+    '🔥 Otro día seguido. Ya no es ‘un día tonto’, es tu modo de vida.',
+    '🧱 Día tras día. Construyendo un hábito con disciplina militar.',
+    '🏃\u200d♂️ Sigues huyendo de la moderación sin mirar atrás.',
+    '📉 Racha confirmada. Tu autocontrol está oficialmente en ERTE.',
+    '🪦 Día consecutivo registrado. Aquí yace tu ‘mañana paro’.',
+    '🚨 Racha en marcha. El plan era frenar… pero tú no vienes a eso.',
+    '🥇 Enhorabuena: récord personal en repetir la misma idea mala.',
+    '🧠 Día seguido. Tu cerebro propuso parar; tú lo ignoraste con experiencia.',
+    '🧯 Racha activa. Esto ya es mantenimiento preventivo de la resaca.',
+    '📍 Sigues. La dirección correcta era la otra.',
+    '🫡 Racha confirmada. Sabotaje personal ejecutado sin fallos.',
+    '📚 Otro día más. Capítulo nuevo de ‘yo lo controlo’ (temporada 12).',
+    '🧊 Día seguido. Frío en la cabeza, caliente en el contador.',
+    '⚠️ Racha activa. No es casualidad, es dedicación.',
+    '🎯 Día tras día acertando donde más duele: en tu propia disciplina.',
+    '🧾 Racha confirmada. Tu historial ya se escribe solo.',
+    '🪤 Otro día seguido. Caer en lo mismo ya es tradición.',
+    '📉 Racha. Lo difícil era parar; por suerte no lo intentaste.',
+    '💀 Día consecutivo. Tus buenas intenciones siguen desaparecidas.',
+    '📆 Racha: +1. La moderación te ha bloqueado.',
+    '🔥 Sigues. Es impresionante… en el sentido triste.',
+    '🥴 Otro día. No era buena idea ayer y hoy sigue sin serlo.',
+    '🧨 Racha activa. Te estás superando… en lo que no conviene.',
+    '🪦 Racha. Un minuto de silencio por tu ‘solo hoy’.',
+    '📣 Día seguido. La coherencia se fue antes que tú.',
+    '🚮 Racha. Si esto fuese un examen, repetirías curso por gusto.',
+    '🧠 Día consecutivo: tu excusa ya venía preparada, ¿verdad?',
+    '📉 Racha activa. El freno está ahí, pero tú vas sin él.',
+    '🏁 Otro día seguido. Vas fuerte… en la dirección equivocada.',
+    '🔔 Racha confirmada. Tu hígado ha pedido que le trates de ‘usted’.',
+    '🧱 Día seguido. La disciplina existe: solo la usas para liarla.',
+    '🥇 Racha. Nadie esperaba nada y aun así lo empeoras.',
+    '📍 Racha activa. Te atrae el desastre como si pagara alquiler.',
+    '🧯 Día seguido. Esto ya requiere protocolo, no voluntad.',
+    '🎭 Racha. ‘Yo controlo’ se ha convertido en tu chiste recurrente.',
+    '🪤 Día consecutivo. La trampa eres tú y también el cebo.',
+    '📚 Racha. Manual práctico de cómo sabotearte (edición ampliada).',
+    '🚨 Día seguido. Aviso: esto ya cuenta como patrón.',
+    '🧾 Racha activa. Estás compitiendo contra ti mismo… y perdiendo.',
+    '🧊 Día seguido. Tu plan de parar está en mantenimiento.',
+    '🥇 Racha confirmada. El ‘solo una’ ya es mitología.',
+    '📉 Día consecutivo. La moderación te escribe y tú la dejas en visto.',
+    '🧨 Racha activa. Estás construyendo un desastre con cariño artesanal.',
+    '🪦 Día seguido. Tus buenas intenciones ya ni hacen check-in.',
+    '📆 Racha activa. Te estás especializando en repetir lo peor.',
+]
+
 
 def build_achievement_messages(person_name: str, year_start: int, qty_added: int, after_units: int, is_first: bool):
     msgs = []
@@ -1037,7 +1111,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
-        base_msg = random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when})."
+        day_units = get_person_day_units(person["id"], consumed_at)
+        dates_desc = list_person_consumed_dates(person["id"], consumed_at, limit=60)
+        streak_days = compute_streak_days(dates_desc, consumed_at)
+
+        if streak_days >= 2 or day_units > 2:
+            msg_pick = random.choice(STREAK_ROAST_PHRASES)
+        else:
+            msg_pick = random.choice(NORMAL_ROAST_PHRASES)
+
+        base_msg = msg_pick + f"\n\n✅ Apuntado ({when})."
         await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
@@ -1123,7 +1206,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        await update.message.reply_text(random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        await update.message.reply_text(random.choice(NORMAL_ROAST_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
         # Logros
