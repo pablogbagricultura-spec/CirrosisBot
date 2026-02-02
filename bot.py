@@ -89,7 +89,6 @@ def menu_kb(is_admin_user: bool):
     rows = [
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
         [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
-        [InlineKeyboardButton("↩️ Deshacer", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("👤 Panel de usuario", callback_data=CB_MENU_PANEL)],
     ]
     if is_admin_user:
