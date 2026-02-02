@@ -160,12 +160,16 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = e["consumed_at"].strftime("%d/%m/%Y")
-        label = f"{e['quantity']} × {e['label']} — {when}"
+        # consumed_at = fecha consumida; created_at = hora a la que se registró en el bot
+        day = e["consumed_at"].strftime("%d/%m/%Y")
+        try:
+            tm = e["created_at"].astimezone(TZ).strftime("%H:%M")
+        except Exception:
+            tm = "--:--"
+        label = f"{day} {tm} — {e['label']} — x{e['quantity']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
     return kb(rows)
-
 def undo_confirm_kb(event_id: int):
     return kb([
         [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_UNDO_CONFIRM}{event_id}")],
