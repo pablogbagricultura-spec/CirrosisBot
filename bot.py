@@ -160,16 +160,22 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        # Fecha consumida + hora real del registro
+        # Fecha consumida + hora del registro (normalizada a Europe/Madrid)
         day = e["consumed_at"].strftime("%d/%m/%Y")
-        try:
-            tm = e["created_at"].strftime("%H:%M")
-        except Exception:
-            tm = "--:--"
+        ca = e.get("created_at")
+        tm = "--:--"
+        if ca:
+            try:
+                # Si viene con zona horaria, convertimos; si viene naive, asumimos TZ del bot
+                local = ca.astimezone(TZ) if getattr(ca, "tzinfo", None) else ca.replace(tzinfo=TZ)
+                tm = local.strftime("%H:%M")
+            except Exception:
+                tm = "--:--"
         label = f"{day} {tm} — {e['label']} — x{e['quantity']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
     return kb(rows)
+
 def undo_confirm_kb(event_id: int):
     return kb([
         [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_UNDO_CONFIRM}{event_id}")],
@@ -490,14 +496,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("¿Qué vas a añadir?", reply_markup=categories_kb())
         set_state(context, "ADD_CAT", {})
         return
-
     if data == CB_MENU_UNDO:
         person = get_assigned_person(tg_id)
         events = list_last_events(person["id"], 5)
         if not events:
-            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
-            set_state(context, "MENU", {})
+            await q.edit_message_text(
+                "No tienes entradas recientes para deshacer.",
+                reply_markup=user_panel_kb(),
+            )
+            set_state(context, "PANEL", {})
             return
+        await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
+        set_state(context, "UNDO_PICK", {})
+        return
+        await q.edit_message_text(
+            "Elige cuál quieres eliminar:",
+            reply_markup=undo_list_kb(events),
+        )
+        set_state(context, "UNDO_PICK", {})
+        return
         await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
         set_state(context, "UNDO_PICK", {})
         return
