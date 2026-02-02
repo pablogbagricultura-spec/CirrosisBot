@@ -51,8 +51,6 @@ CB_MENU_UNDO = "menu:undo"
 CB_MENU_ADMIN = "menu:admin"
 CB_MENU_PANEL = "menu:panel"
 
-CB_PANEL_MENU = "panel:menu"
-CB_PANEL_HOME = "panel:home"
 CB_PANEL_DRINKS = "panel:drinks"
 CB_PANEL_OLDER = "panel:older:"  # panel:older:<cursor_id>
 CB_PANEL_NEWER = "panel:newer:"  # panel:newer:<cursor_id>
@@ -91,6 +89,7 @@ def menu_kb(is_admin_user: bool):
     rows = [
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
         [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
+        [InlineKeyboardButton("↩️ Deshacer", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("👤 Panel de usuario", callback_data=CB_MENU_PANEL)],
     ]
     if is_admin_user:
@@ -102,9 +101,10 @@ def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
         [InlineKeyboardButton("↩️ Deshacer bebidas", callback_data=CB_MENU_UNDO)],
-        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)],
+        [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
     ]
     return kb(rows)
+
 
 def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, newest_id: int | None):
     nav = []
@@ -115,7 +115,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_MENU_PANEL)])
     return kb(rows)
 
 def format_event_line(ev):
@@ -161,23 +161,21 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        ts = e["created_at"].astimezone(TZ)
-        stamp = ts.strftime("%d/%m %H:%M")
-        label = f"{stamp} — {e['label']} — x{e['quantity']}"
+        when = e["consumed_at"].strftime("%d/%m/%Y")
+        label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
+    rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
     return kb(rows)
-
 
 def undo_confirm_kb(event_id: int):
     return kb([
         [InlineKeyboardButton("✅ Sí, eliminar", callback_data=f"{CB_UNDO_CONFIRM}{event_id}")],
-        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_PANEL_HOME)],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=CB_UNDO_CANCEL)],
     ])
 
 def years_kb(years):
     rows = [[InlineKeyboardButton(f"{y}-{y+1}", callback_data=f"{CB_YEAR}{y}")] for y in years]
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
+    rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
     return kb(rows)
 
 def admin_main_kb():
@@ -513,7 +511,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------- PANEL USUARIO --------
-    if data == CB_MENU_PANEL or data == CB_PANEL_HOME:
+    if data == CB_MENU_PANEL or data == "panel:menu":
         person = get_assigned_person(tg_id)
         if not person:
             await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
@@ -1051,18 +1049,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
             "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
     if data == CB_UNDO_CANCEL:
-        person = get_assigned_person(tg_id)
+        # Cancelar deshacer -> volver SIEMPRE al panel de usuario
         await q.edit_message_text(
-            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            "👤 Panel de usuario",
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
