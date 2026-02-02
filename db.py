@@ -307,7 +307,7 @@ def list_last_events(person_id: int, limit: int = 3):
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             WHERE e.person_id=%s AND e.is_void=FALSE
-            ORDER BY e.id DESC
+            ORDER BY e.created_at DESC
             LIMIT %s;
             """, (person_id, limit))
             return cur.fetchall()
