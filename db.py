@@ -5,8 +5,6 @@ from psycopg2.extras import RealDictCursor
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-PERSONS_SEED = ["Pablo", "Javi", "Jesus", "Fer", "Cuco", "Oli", "Emilio"]
-
 DRINKS_SEED = [
     ("CORTAITA","Cortaita","BEER",0.25,1.65),
     ("CANA","Caña","BEER",0.25,1.50),
@@ -136,15 +134,6 @@ def init_db():
             );
             """)
 
-            conn.commit()
-
-        # Seed personas
-        with conn.cursor() as cur:
-            for name in PERSONS_SEED:
-                cur.execute(
-                    "INSERT INTO persons(name, status) VALUES (%s, 'NEW') ON CONFLICT (name) DO NOTHING;",
-                    (name,)
-                )
             conn.commit()
 
         # Seed bebidas
@@ -318,7 +307,7 @@ def list_last_events(person_id: int, limit: int = 3):
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             WHERE e.person_id=%s AND e.is_void=FALSE
-            ORDER BY e.created_at DESC
+            ORDER BY e.id DESC
             LIMIT %s;
             """, (person_id, limit))
             return cur.fetchall()
