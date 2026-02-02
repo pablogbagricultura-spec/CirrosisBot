@@ -518,8 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if person.get("status") == "INACTIVE":
             await q.edit_message_text(
-                "🚫 Estás suspendido.
-El admin tiene que reactivarte para volver a usar el bot."
+                "🚫 Estás suspendido. El admin tiene que reactivarte para volver a usar el bot."
             )
             set_state(context, "SUSPENDED", {})
             return
