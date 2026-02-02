@@ -161,11 +161,13 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = e["consumed_at"].strftime("%d/%m/%Y")
-        label = f"{e['quantity']} × {e['label']} — {when}"
+        ts = e["created_at"].astimezone(TZ)
+        stamp = ts.strftime("%d/%m %H:%M")
+        label = f"{stamp} — {e['label']} — x{e['quantity']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_HOME)])
     return kb(rows)
+
 
 def undo_confirm_kb(event_id: int):
     return kb([
@@ -488,6 +490,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "ADD_CAT", {})
         return
 
+    if data == CB_MENU_UNDO:
+        person = get_assigned_person(tg_id)
+        events = list_last_events(person["id"], 3)
+        if not events:
+            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
+            set_state(context, "MENU", {})
+            return
+        await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
+        set_state(context, "UNDO_PICK", {})
+        return
+
     if data == CB_MENU_REPORT:
         years = list_years_with_data()
         if not years:
@@ -497,6 +510,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("¿Qué año cervecero quieres ver?", reply_markup=years_kb(years))
         set_state(context, "REPORT_PICK_YEAR", {})
         return
+
 
 # -------- PANEL USUARIO --------
     if data == CB_MENU_PANEL or data == CB_PANEL_HOME:
@@ -1036,18 +1050,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         person = get_assigned_person(tg_id)
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
-            "✅ Entrada eliminada.",
-            reply_markup=user_panel_kb(),
+            "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
     if data == CB_UNDO_CANCEL:
+        person = get_assigned_person(tg_id)
         await q.edit_message_text(
-            "Vale, no toco nada 🙂",
-            reply_markup=user_panel_kb(),
+            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1158,6 +1173,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ No se pudo eliminar (¿ya no existe?).", reply_markup=admin_main_kb())
         set_state(context, "ADMIN", {})
+        return
+
+        ok = add_person(text)
+        if ok:
+            await update.message.reply_text(f"✅ '{text}' añadido como nueva persona.", reply_markup=menu_kb(True))
+        else:
+            await update.message.reply_text("⚠️ No se pudo añadir (¿ya existe?).", reply_markup=menu_kb(True))
+        set_state(context, "MENU", {})
         return
 
     if state == "SUSPENDED":
