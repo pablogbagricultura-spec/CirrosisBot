@@ -90,7 +90,6 @@ def menu_kb(is_admin_user: bool):
     rows = [
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
         [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
-        [InlineKeyboardButton("↩️ Deshacer", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("👤 Panel de usuario", callback_data=CB_MENU_PANEL)],
     ]
     if is_admin_user:
@@ -101,6 +100,7 @@ def menu_kb(is_admin_user: bool):
 def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
+        [InlineKeyboardButton("↩️ Deshacer bebidas", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
     ]
     return kb(rows)
@@ -160,11 +160,14 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = e["consumed_at"].strftime("%d/%m/%Y")
-        label = f"{e['quantity']} × {e['label']} — {when}"
+        ts = e["created_at"].astimezone(TZ)
+        stamp = ts.strftime("%d/%m %H:%M")
+        label = f'{stamp} — {e["label"]} — x{e["quantity"]}'
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
-    rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
+    # Volver al panel de usuario (no al menú principal)
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
     return kb(rows)
+
 
 def undo_confirm_kb(event_id: int):
     return kb([
@@ -395,7 +398,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
             reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
     # No asignado -> solicitud pendiente (no hay auto-asignación)
@@ -444,9 +447,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.edit_message_text(
             f"👋 Hola, {person['name']}.\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
     if data == "back:cat":
@@ -489,10 +492,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == CB_MENU_UNDO:
         person = get_assigned_person(tg_id)
-        events = list_last_events(person["id"], 3)
+        events = list_last_events(person["id"], 10)
         if not events:
-            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
-            set_state(context, "MENU", {})
+            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=user_panel_kb())
+            set_state(context, "PANEL", {})
             return
         await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
         set_state(context, "UNDO_PICK", {})
@@ -1048,18 +1051,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
             "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
     if data == CB_UNDO_CANCEL:
         person = get_assigned_person(tg_id)
         await q.edit_message_text(
             f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
