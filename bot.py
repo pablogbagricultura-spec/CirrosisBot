@@ -14,7 +14,7 @@ from db import (
     list_pending_telegrams,
 
     # Bebidas / eventos
-    list_drink_types, insert_event, list_last_events, void_event,
+    list_drink_types, insert_event, list_last_events, list_user_events_page, void_event,
 
     # Informes / rankings
     list_years_with_data, report_year,
@@ -49,6 +49,12 @@ CB_MENU_ADD = "menu:add"
 CB_MENU_REPORT = "menu:report"
 CB_MENU_UNDO = "menu:undo"
 CB_MENU_ADMIN = "menu:admin"
+CB_MENU_PANEL = "menu:panel"
+
+CB_PANEL_MENU = "panel:menu"
+CB_PANEL_DRINKS = "panel:drinks"
+CB_PANEL_OLDER = "panel:older:"  # panel:older:<cursor_id>
+CB_PANEL_NEWER = "panel:newer:"  # panel:newer:<cursor_id>
 
 CB_CAT = "cat:"
 CB_TYPE = "type:"
@@ -85,10 +91,37 @@ def menu_kb(is_admin_user: bool):
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
         [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
         [InlineKeyboardButton("↩️ Deshacer", callback_data=CB_MENU_UNDO)],
+        [InlineKeyboardButton("👤 Panel de usuario", callback_data=CB_MENU_PANEL)],
     ]
     if is_admin_user:
         rows.append([InlineKeyboardButton("⚙️ Administración", callback_data=CB_MENU_ADMIN)])
     return kb(rows)
+
+
+def user_panel_kb():
+    rows = [
+        [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
+        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)],
+    ]
+    return kb(rows)
+
+def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, newest_id: int | None):
+    nav = []
+    if has_older and oldest_id is not None:
+        nav.append(InlineKeyboardButton("⬅️ Más antiguas", callback_data=f"{CB_PANEL_OLDER}{oldest_id}"))
+    if has_newer and newest_id is not None:
+        nav.append(InlineKeyboardButton("➡️ Más recientes", callback_data=f"{CB_PANEL_NEWER}{newest_id}"))
+    rows = []
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
+    return kb(rows)
+
+def format_event_line(ev):
+    # ev: dict con id, label, quantity, created_at
+    ts = ev["created_at"].astimezone(TZ)
+    stamp = ts.strftime("%d/%m %H:%M")
+    return f"{stamp} — {ev['label']} — x{ev['quantity']}"
 
 def persons_kb(persons):
     return kb([[InlineKeyboardButton(p["name"], callback_data=f"{CB_PICK_PERSON}{p['id']}")] for p in persons])
@@ -475,6 +508,129 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_state(context, "REPORT_PICK_YEAR", {})
         return
 
+
+# -------- PANEL USUARIO --------
+    if data == CB_MENU_PANEL or data == CB_PANEL_MENU:
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
+            set_state(context, "PENDING", {})
+            return
+        if person.get("status") == "INACTIVE":
+            await q.edit_message_text(
+                "🚫 Estás suspendido.
+El admin tiene que reactivarte para volver a usar el bot."
+            )
+            set_state(context, "SUSPENDED", {})
+            return
+
+        await q.edit_message_text("👤 Panel de usuario", reply_markup=user_panel_kb())
+        set_state(context, "PANEL", {})
+        return
+
+    if data == CB_PANEL_DRINKS:
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
+            set_state(context, "PENDING", {})
+            return
+
+        events = list_user_events_page(person["id"], limit=15)
+        if not events:
+            await q.edit_message_text(
+                "Aún no has añadido bebidas 🙂",
+                reply_markup=panel_history_kb(False, False, None, None),
+            )
+            set_state(context, "PANEL_DRINKS", {"oldest": None, "newest": None})
+            return
+
+        newest_id = max(e["id"] for e in events)
+        oldest_id = min(e["id"] for e in events)
+        has_older = bool(list_user_events_page(person["id"], limit=1, before_id=oldest_id))
+        has_newer = bool(list_user_events_page(person["id"], limit=1, after_id=newest_id))
+
+        lines = "\n".join(format_event_line(e) for e in events)
+        await q.edit_message_text(
+            "🕒 *Mis últimas bebidas* (15 más recientes)\n\n" + lines,
+            reply_markup=panel_history_kb(has_older, has_newer, oldest_id, newest_id),
+            parse_mode="Markdown",
+        )
+        set_state(context, "PANEL_DRINKS", {"oldest": oldest_id, "newest": newest_id})
+        return
+
+    if data.startswith(CB_PANEL_OLDER):
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
+            set_state(context, "PENDING", {})
+            return
+
+        try:
+            cursor_id = int(data.split(":", 2)[-1])
+        except Exception:
+            await q.edit_message_text("⚠️ Cursor inválido.", reply_markup=user_panel_kb())
+            set_state(context, "PANEL", {})
+            return
+
+        events = list_user_events_page(person["id"], limit=15, before_id=cursor_id)
+        if not events:
+            await q.edit_message_text(
+                "No hay más antiguas.",
+                reply_markup=panel_history_kb(False, True, None, cursor_id),
+            )
+            return
+
+        newest_id = max(e["id"] for e in events)
+        oldest_id = min(e["id"] for e in events)
+        has_older = bool(list_user_events_page(person["id"], limit=1, before_id=oldest_id))
+        has_newer = bool(list_user_events_page(person["id"], limit=1, after_id=newest_id))
+
+        lines = "\n".join(format_event_line(e) for e in events)
+        await q.edit_message_text(
+            "🕒 *Historial de bebidas*\n\n" + lines,
+            reply_markup=panel_history_kb(has_older, has_newer, oldest_id, newest_id),
+            parse_mode="Markdown",
+        )
+        set_state(context, "PANEL_DRINKS", {"oldest": oldest_id, "newest": newest_id})
+        return
+
+    if data.startswith(CB_PANEL_NEWER):
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
+            set_state(context, "PENDING", {})
+            return
+
+        try:
+            cursor_id = int(data.split(":", 2)[-1])
+        except Exception:
+            await q.edit_message_text("⚠️ Cursor inválido.", reply_markup=user_panel_kb())
+            set_state(context, "PANEL", {})
+            return
+
+        # DB devuelve asc, invertimos para mostrar desc
+        events_asc = list_user_events_page(person["id"], limit=15, after_id=cursor_id)
+        events = list(reversed(events_asc))
+        if not events:
+            await q.edit_message_text(
+                "Ya estás en las más recientes.",
+                reply_markup=panel_history_kb(True, False, cursor_id, None),
+            )
+            return
+
+        newest_id = max(e["id"] for e in events)
+        oldest_id = min(e["id"] for e in events)
+        has_older = bool(list_user_events_page(person["id"], limit=1, before_id=oldest_id))
+        has_newer = bool(list_user_events_page(person["id"], limit=1, after_id=newest_id))
+
+        lines = "\n".join(format_event_line(e) for e in events)
+        await q.edit_message_text(
+            "🕒 *Historial de bebidas*\n\n" + lines,
+            reply_markup=panel_history_kb(has_older, has_newer, oldest_id, newest_id),
+            parse_mode="Markdown",
+        )
+        set_state(context, "PANEL_DRINKS", {"oldest": oldest_id, "newest": newest_id})
+        return
 
     # -------- ADMIN --------
     if data == CB_MENU_ADMIN:

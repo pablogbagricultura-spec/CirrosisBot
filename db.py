@@ -323,6 +323,54 @@ def list_last_events(person_id: int, limit: int = 3):
             """, (person_id, limit))
             return cur.fetchall()
 
+
+def list_user_events_page(person_id: int, limit: int = 15, before_id: int | None = None, after_id: int | None = None):
+    """
+    Devuelve eventos (bebidas) del usuario con cantidad y hora (created_at), para paginación.
+    - Página inicial: before_id=None y after_id=None -> más recientes DESC.
+    - Más antiguas: before_id=<id_mas_antiguo_en_pagina> -> siguientes más antiguas DESC.
+    - Más recientes: after_id=<id_mas_reciente_en_pagina> -> siguientes más recientes (ASC en DB, luego se invierte).
+    Retorna lista de dicts: {id, quantity, label, created_at}
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if before_id is not None and after_id is not None:
+                raise ValueError("Usa solo before_id o after_id, no ambos.")
+
+            if before_id is not None:
+                cur.execute("""
+                SELECT e.id, e.quantity, dt.label, e.created_at
+                FROM drink_events e
+                JOIN drink_types dt ON dt.id = e.drink_type_id
+                WHERE e.person_id=%s AND e.is_void=FALSE AND e.id < %s
+                ORDER BY e.id DESC
+                LIMIT %s;
+                """, (person_id, before_id, limit))
+                return cur.fetchall()
+
+            if after_id is not None:
+                # Más recientes que after_id (asc) -> el bot las invertirá para mostrar DESC
+                cur.execute("""
+                SELECT e.id, e.quantity, dt.label, e.created_at
+                FROM drink_events e
+                JOIN drink_types dt ON dt.id = e.drink_type_id
+                WHERE e.person_id=%s AND e.is_void=FALSE AND e.id > %s
+                ORDER BY e.id ASC
+                LIMIT %s;
+                """, (person_id, after_id, limit))
+                return cur.fetchall()
+
+            cur.execute("""
+            SELECT e.id, e.quantity, dt.label, e.created_at
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.person_id=%s AND e.is_void=FALSE
+            ORDER BY e.id DESC
+            LIMIT %s;
+            """, (person_id, limit))
+            return cur.fetchall()
+
+
 def void_event(person_id: int, telegram_user_id: int, event_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
