@@ -314,7 +314,7 @@ def list_last_events(person_id: int, limit: int = 3):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT e.id, e.quantity, e.consumed_at, dt.label
+            SELECT e.id, e.quantity, e.consumed_at, dt.label, e.created_at
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             WHERE e.person_id=%s AND e.is_void=FALSE
