@@ -980,39 +980,3 @@ def admin_delete_person(person_id: int) -> bool:
             cur.execute("DELETE FROM persons WHERE id=%s;", (person_id,))
             conn.commit()
             return cur.rowcount > 0
-
-
-def get_person_day_units(person_id: int, day: dt.date) -> int:
-    """Suma de unidades registradas por una persona en un día (según consumed_at)."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(e.quantity), 0) AS units
-                FROM drink_events e
-                WHERE e.person_id=%s
-                  AND e.is_void=FALSE
-                  AND e.consumed_at=%s;
-                """,
-                (person_id, day),
-            )
-            row = cur.fetchone()
-            return int(row["units"] or 0)
-
-def list_person_consumed_dates(person_id: int, up_to: dt.date, limit: int = 60):
-    """Lista de fechas (consumed_at) distintas en orden DESC hasta up_to inclusive."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT e.consumed_at
-                FROM drink_events e
-                WHERE e.person_id=%s
-                  AND e.is_void=FALSE
-                  AND e.consumed_at <= %s
-                ORDER BY e.consumed_at DESC
-                LIMIT %s;
-                """,
-                (person_id, up_to, limit),
-            )
-            return [r["consumed_at"] for r in cur.fetchall()]
