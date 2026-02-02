@@ -101,7 +101,7 @@ def menu_kb(is_admin_user: bool):
 def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
-        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)],
+        [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
     ]
     return kb(rows)
 
@@ -114,7 +114,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")])
     return kb(rows)
 
 def format_event_line(ev):
@@ -517,9 +517,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_state(context, "PENDING", {})
             return
         if person.get("status") == "INACTIVE":
-            await q.edit_message_text(
-                "🚫 Estás suspendido. El admin tiene que reactivarte para volver a usar el bot."
-            )
+            await q.edit_message_text("🚫 Estás suspendido. El admin tiene que reactivarte para volver a usar el bot.")
             set_state(context, "SUSPENDED", {})
             return
 
