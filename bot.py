@@ -493,7 +493,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == CB_MENU_UNDO:
         person = get_assigned_person(tg_id)
-        events = list_last_events(person["id"], 3)
+        events = list_last_events(person["id"], 5)
         if not events:
             await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
             set_state(context, "MENU", {})
