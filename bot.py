@@ -114,7 +114,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
     return kb(rows)
 
 def format_event_line(ev):
