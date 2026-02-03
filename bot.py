@@ -51,6 +51,29 @@ from db import (
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 TZ = ZoneInfo("Europe/Madrid")
 
+
+def _to_local_dt(ts):
+    """Make datetime safe for display in TZ (works with naive/aware)."""
+    if ts is None:
+        return None
+    try:
+        if getattr(ts, "tzinfo", None) is None:
+            # assume it's already local time
+            return ts.replace(tzinfo=TZ)
+        return ts.astimezone(TZ)
+    except Exception:
+        return ts
+
+def _fmt_ts(ts, fmt="%d/%m %H:%M"):
+    dtv = _to_local_dt(ts)
+    if not dtv:
+        return "--:--"
+    try:
+        return dtv.strftime(fmt)
+    except Exception:
+        return str(dtv)
+
+
 # Callbacks
 CB_MENU_ADD = "menu:add"
 CB_MENU_REPORT = "menu:report"
@@ -341,8 +364,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
 
 def format_event_line(ev):
     # ev: dict con id, label, quantity, created_at
-    ts = ev["created_at"].astimezone(TZ)
-    stamp = ts.strftime("%d/%m %H:%M")
+    stamp = _fmt_ts(ev["created_at"])
     return f"{stamp} — {ev['label']} — x{ev['quantity']}"
 
 def persons_kb(persons):
@@ -382,7 +404,7 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = e["consumed_at"].astimezone(TZ).strftime("%d/%m %H:%M")
+        when = _fmt_ts(e.get("consumed_at"))
         label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data="back:panel")])
