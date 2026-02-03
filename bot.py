@@ -1,6 +1,7 @@
 import os
 import datetime as dt
 import random
+import calendar
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -39,6 +40,12 @@ from db import (
     admin_suspend_person,
     admin_reactivate_person,
     admin_delete_person,
+    list_calendar_years_with_data,
+    user_stats_range,
+    user_year_stats,
+    group_month_summary,
+    drink_type_person_totals_range,
+    drink_type_totals_range,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -47,10 +54,13 @@ TZ = ZoneInfo("Europe/Madrid")
 # Callbacks
 CB_MENU_ADD = "menu:add"
 CB_MENU_REPORT = "menu:report"
+CB_MENU_RANK = "menu:rank"
 CB_MENU_UNDO = "menu:undo"
 CB_MENU_ADMIN = "menu:admin"
 CB_MENU_PANEL = "menu:panel"
+CB_MENU_ROOT = "menu:root"
 
+CB_PANEL_MENU = "panel:menu"
 CB_PANEL_DRINKS = "panel:drinks"
 CB_PANEL_OLDER = "panel:older:"  # panel:older:<cursor_id>
 CB_PANEL_NEWER = "panel:newer:"  # panel:newer:<cursor_id>
@@ -65,6 +75,12 @@ CB_UNDO_CONFIRM = "undo_yes:"
 CB_UNDO_CANCEL = "undo_no"
 
 CB_YEAR = "year:"  # year:<year_start>
+
+CB_RANK_MENU = "rank:menu"
+CB_RANK_USERS = "rank:users"
+CB_RANK_TYPES = "rank:types"
+CB_RANK_USERS_PREV = "rank:users_prev"
+CB_RANK_USERS_CURR = "rank:users_curr"
 
 # Admin callbacks
 CB_ADMIN_PERSONS = "admin:persons"
@@ -88,7 +104,7 @@ def kb(rows):
 def menu_kb(is_admin_user: bool):
     rows = [
         [InlineKeyboardButton("➕ Añadir", callback_data=CB_MENU_ADD)],
-        [InlineKeyboardButton("📊 Informes", callback_data=CB_MENU_REPORT)],
+        [InlineKeyboardButton("🏆 Ranking", callback_data=CB_MENU_RANK)],
         [InlineKeyboardButton("👤 Panel de usuario", callback_data=CB_MENU_PANEL)],
     ]
     if is_admin_user:
@@ -96,14 +112,196 @@ def menu_kb(is_admin_user: bool):
     return kb(rows)
 
 
+def rank_menu_kb():
+    return kb([
+        [InlineKeyboardButton("👥 Ranking por usuarios", callback_data=CB_RANK_USERS)],
+        [InlineKeyboardButton("🍺 Ranking por tipos de bebida", callback_data=CB_RANK_TYPES)],
+        [InlineKeyboardButton("⬅️ Volver", callback_data=CB_MENU_ROOT)],
+    ])
+
+def rank_back_kb():
+    return kb([[InlineKeyboardButton("⬅️ Volver a Ranking", callback_data=CB_RANK_MENU)]])
+
+STRONG_DAY_THRESHOLD_L = 3.0
+
+def _legend_strong_day_short() -> str:
+    return f"🧨 Día fuerte = día con ≥ {STRONG_DAY_THRESHOLD_L:.1f} L"
+
+def _legend_month_summary_full() -> str:
+    return (
+        "🧴 Total del mes: litros totales del grupo\n"
+        "📆 Días activos: días con al menos un registro\n"
+        "📈 Media por día activo: litros / días activos\n"
+        "🧃 Promedio diario del mes: litros / días del mes\n"
+        "🚫 Días 0: días sin consumo\n"
+        f"🧨 Días fuertes: días con ≥ {STRONG_DAY_THRESHOLD_L:.1f} L en total"
+    )
+
+def _fmt_l(x: float) -> str:
+    return f"{x:.2f} L"
+
+def _fmt_month_es(m: int) -> str:
+    return ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][m-1]
+
+def _week_range(today: dt.date):
+    start = today - dt.timedelta(days=today.weekday())
+    end = start + dt.timedelta(days=6)
+    return start, end
+
+def _month_range(today: dt.date):
+    start = dt.date(today.year, today.month, 1)
+    last = calendar.monthrange(today.year, today.month)[1]
+    end = dt.date(today.year, today.month, last)
+    return start, end
+
+def _year_range(year: int):
+    return dt.date(year, 1, 1), dt.date(year, 12, 31)
+
+def render_users_block(title: str, rows: list, include_month_extras: bool = False, month_days: int = 0, include_year_extras: bool = False, year: int = None):
+    lines = [title]
+    if not rows:
+        lines.append("• Nadie ha registrado nada en este periodo.")
+        lines.append(_legend_strong_day_short())
+        return "\n".join(lines)
+
+    medals = ["🥇","🥈","🥉"]
+    for i, r in enumerate(rows, start=1):
+        prefix = medals[i-1] if i <= 3 else f"{i}️⃣"
+        liters = float(r["liters_total"])
+        ad = int(r["active_days"])
+        avg_ad = float(r["avg_liters_per_active_day"])
+        sd = int(r["strong_days"])
+        peak_day = r.get("peak_day")
+        peak_l = float(r.get("peak_liters") or 0)
+
+        lines.append(f"{prefix} {r['person']} — 🧴 {_fmt_l(liters)}")
+        base = [f"📆 {ad} días", f"📈 {_fmt_l(avg_ad)}/día", f"🧨 {sd} días fuertes"]
+        lines.append(" · ".join(base))
+
+        if peak_day:
+            try:
+                d = peak_day.strftime("%d/%m")
+            except Exception:
+                d = str(peak_day)
+            lines.append(f"💥 pico: {d} ({_fmt_l(peak_l)})")
+
+        if include_month_extras and month_days:
+            avg_cd = liters / month_days
+            z0 = month_days - ad
+            lines.append(f"🧃 {_fmt_l(avg_cd)}/día (mes) · 🚫 {z0} días 0")
+
+        if include_year_extras and year:
+            days_in_year = 366 if calendar.isleap(year) else 365
+            avg_year = liters / days_in_year
+            sm = _fmt_month_es(int(r.get("strongest_month", 1)))
+            wm = _fmt_month_es(int(r.get("weakest_month", 1)))
+            sm_l = float(r.get("strongest_month_liters", 0))
+            wm_l = float(r.get("weakest_month_liters", 0))
+            lines.append(f"🧃 {_fmt_l(avg_year)}/día (año)")
+            lines.append(f"💥 mes más fuerte: {sm} ({_fmt_l(sm_l)}) · 🧊 mes más flojo: {wm} ({_fmt_l(wm_l)})")
+
+        lines.append("")
+
+    lines.append(_legend_strong_day_short())
+    return "\n".join(lines).strip()
+
+def render_users_ranking_current(today: dt.date):
+    ws, we = _week_range(today)
+    ms, me = _month_range(today)
+    week_rows = user_stats_range(ws, we)
+    month_rows = user_stats_range(ms, me)
+    year_rows = user_year_stats(today.year)
+    month_days = (me - ms).days + 1
+
+    parts = ["🏆 Ranking por usuarios", ""]
+    parts.append(render_users_block(f"📅 Semana ({ws.strftime('%d/%m')}–{we.strftime('%d/%m')})", week_rows))
+    parts.append("")
+    parts.append(render_users_block(f"🗓️ Mes ({_fmt_month_es(today.month)} {today.year})", month_rows, include_month_extras=True, month_days=month_days))
+    parts.append("")
+    parts.append(render_users_block(f"📆 Año ({today.year})", year_rows, include_year_extras=True, year=today.year))
+    return "\n".join(parts).strip()
+
+def render_prev_year_extra(year: int):
+    year_rows = user_year_stats(year)
+    annual = render_users_block(f"📆 Resumen anual ({year})", year_rows, include_year_extras=True, year=year)
+    months = group_month_summary(year)
+
+    lines = [f"🗓️ Resumen mensual ({year}) — grupo", ""]
+    for r in months:
+        m = _fmt_month_es(int(r["month"]))
+        liters = float(r["liters_total"])
+        ad = int(r["active_days"])
+        avg_ad = float(r["avg_per_active_day"])
+        avg_cd = float(r["avg_per_calendar_day"])
+        z0 = int(r["zero_days"])
+        sd = int(r["strong_days"])
+        lines.append(f"{m} — 🧴 {_fmt_l(liters)} · 📆 {ad} días · 📈 {_fmt_l(avg_ad)}/día · 🧃 {_fmt_l(avg_cd)}/día · 🚫 {z0} días 0 · 🧨 {sd}")
+    lines.append("")
+    lines.append(_legend_month_summary_full())
+    monthly = "\n".join(lines).strip()
+    return annual + "\n\n" + monthly
+
+def render_types_block(title: str, start_date: dt.date, end_date: dt.date, period_label: str):
+    totals = drink_type_totals_range(start_date, end_date)
+    per_person = drink_type_person_totals_range(start_date, end_date)
+    key = lambda r: (r["category"], r["label"])
+    totals_map = {(t["category"], t["label"]): t for t in totals}
+    persons_map = {}
+    for r in per_person:
+        persons_map.setdefault(key(r), []).append(r)
+
+    lines = [title]
+    if not totals_map:
+        lines.append("• No hay consumos en este periodo.")
+        return "\n".join(lines)
+
+    for (cat, label), t in totals_map.items():
+        has_liters = bool(t["has_liters"])
+        header_icon = "🍺" if cat == "BEER" else "🥃"
+        lines.append("")
+        lines.append(f"{header_icon} {label} ({'litros' if has_liters else 'unidades'})")
+
+        users = persons_map.get((cat, label), [])
+        if has_liters:
+            users.sort(key=lambda r: (float(r["litros"] or 0), int(r["unidades"] or 0), r["person"]), reverse=True)
+        else:
+            users.sort(key=lambda r: (int(r["unidades"] or 0), r["person"]), reverse=True)
+
+        medals = ["🥇","🥈","🥉"]
+        for i, u in enumerate(users, start=1):
+            prefix = medals[i-1] if i <= 3 else f"{i}️⃣"
+            if has_liters:
+                lines.append(f"{prefix} {u['person']} — 🧴 {_fmt_l(float(u['litros'] or 0))}")
+            else:
+                lines.append(f"{prefix} {u['person']} — 🍸 {int(u['unidades'])} uds")
+
+        if has_liters:
+            lines.append(f"📊 Total {label} {period_label}: {_fmt_l(float(t['litros'] or 0))}")
+        else:
+            lines.append(f"📊 Total {label} {period_label}: {int(t['unidades'])} uds")
+
+    return "\n".join(lines).strip()
+
+def render_types_ranking_current(today: dt.date):
+    ws, we = _week_range(today)
+    ms, me = _month_range(today)
+    ys, ye = _year_range(today.year)
+
+    parts = ["🏆 Ranking por tipos de bebida", ""]
+    parts.append(render_types_block(f"📅 Semana ({ws.strftime('%d/%m')}–{we.strftime('%d/%m')})", ws, we, "semana"))
+    parts.append("")
+    parts.append(render_types_block(f"🗓️ Mes ({_fmt_month_es(today.month)} {today.year})", ms, me, "mes"))
+    parts.append("")
+    parts.append(render_types_block(f"📆 Año ({today.year})", ys, ye, "año"))
+    return "\n".join(parts).strip()
+
+
 def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
-        [InlineKeyboardButton("↩️ Deshacer bebidas", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
     ]
     return kb(rows)
-
 
 def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, newest_id: int | None):
     nav = []
@@ -114,7 +312,7 @@ def panel_history_kb(has_older: bool, has_newer: bool, oldest_id: int | None, ne
     rows = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_MENU_PANEL)])
+    rows.append([InlineKeyboardButton("⬅️ Volver", callback_data=CB_PANEL_MENU)])
     return kb(rows)
 
 def format_event_line(ev):
@@ -160,20 +358,10 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        # Fecha consumida + hora del registro (normalizada a Europe/Madrid)
-        day = e["consumed_at"].strftime("%d/%m/%Y")
-        ca = e.get("created_at")
-        tm = "--:--"
-        if ca:
-            try:
-                # Si viene con zona horaria, convertimos; si viene naive, asumimos TZ del bot
-                local = ca.astimezone(TZ) if getattr(ca, "tzinfo", None) else ca.replace(tzinfo=TZ)
-                tm = local.strftime("%H:%M")
-            except Exception:
-                tm = "--:--"
-        label = f"{day} {tm} — {e['label']} — x{e['quantity']}"
+        when = e["consumed_at"].strftime("%d/%m/%Y")
+        label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
-    rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
+    rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
 
 def undo_confirm_kb(event_id: int):
@@ -184,7 +372,7 @@ def undo_confirm_kb(event_id: int):
 
 def years_kb(years):
     rows = [[InlineKeyboardButton(f"{y}-{y+1}", callback_data=f"{CB_YEAR}{y}")] for y in years]
-    rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data=CB_MENU_PANEL)])
+    rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
     return kb(rows)
 
 def admin_main_kb():
@@ -436,6 +624,70 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🚫 Estás suspendido. El admin debe reactivarte.")
         set_state(context, "SUSPENDED", {})
         return
+
+    # -------- RANKING --------
+    if data == CB_MENU_RANK or data == CB_RANK_MENU:
+        await q.edit_message_text(
+            "🏆 Ranking\nElige qué quieres ver:",
+            reply_markup=rank_menu_kb()
+        )
+        return
+
+    if data == CB_MENU_ROOT:
+        await q.edit_message_text(
+            "📌 Menú principal:",
+            reply_markup=menu_kb(is_admin(tg_id))
+        )
+        return
+
+    if data == CB_RANK_USERS:
+        today = dt.datetime.now(TZ).date()
+        years = list_calendar_years_with_data()
+        prev_year = (today.year - 1) if (today.year - 1) in years else None
+
+        txt = render_users_ranking_current(today)
+        rows = []
+        if prev_year:
+            rows.append([InlineKeyboardButton(f"📆 Ver {prev_year}", callback_data=CB_RANK_USERS_PREV)])
+        rows.append([InlineKeyboardButton("⬅️ Volver a Ranking", callback_data=CB_RANK_MENU)])
+        await q.edit_message_text(txt, reply_markup=kb(rows))
+        return
+
+    if data == CB_RANK_USERS_PREV:
+        today = dt.datetime.now(TZ).date()
+        prev_year = today.year - 1
+        years = list_calendar_years_with_data()
+        if prev_year not in years:
+            await q.edit_message_text("No hay datos del año anterior.", reply_markup=rank_back_kb())
+            return
+
+        txt = "🏆 Ranking por usuarios\n\n" + render_prev_year_extra(prev_year)
+        rows = [
+            [InlineKeyboardButton(f"📆 Volver a {today.year}", callback_data=CB_RANK_USERS_CURR)],
+            [InlineKeyboardButton("⬅️ Volver a Ranking", callback_data=CB_RANK_MENU)],
+        ]
+        await q.edit_message_text(txt, reply_markup=kb(rows))
+        return
+
+    if data == CB_RANK_USERS_CURR:
+        today = dt.datetime.now(TZ).date()
+        years = list_calendar_years_with_data()
+        prev_year = (today.year - 1) if (today.year - 1) in years else None
+
+        txt = render_users_ranking_current(today)
+        rows = []
+        if prev_year:
+            rows.append([InlineKeyboardButton(f"📆 Ver {prev_year}", callback_data=CB_RANK_USERS_PREV)])
+        rows.append([InlineKeyboardButton("⬅️ Volver a Ranking", callback_data=CB_RANK_MENU)])
+        await q.edit_message_text(txt, reply_markup=kb(rows))
+        return
+
+    if data == CB_RANK_TYPES:
+        today = dt.datetime.now(TZ).date()
+        txt = render_types_ranking_current(today)
+        await q.edit_message_text(txt, reply_markup=rank_back_kb())
+        return
+
     if not assigned and not is_admin(tg_id):
         await q.edit_message_text("📨 Estás pendiente de aprobación. El admin debe asignarte una plaza.")
         set_state(context, "PENDING", {})
@@ -499,7 +751,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == CB_MENU_UNDO:
         person = get_assigned_person(tg_id)
-        events = list_last_events(person["id"], 5)
+        events = list_last_events(person["id"], 3)
         if not events:
             await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
             set_state(context, "MENU", {})
@@ -520,7 +772,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------- PANEL USUARIO --------
-    if data == CB_MENU_PANEL or data == "panel:menu":
+    if data == CB_MENU_PANEL or data == CB_PANEL_MENU:
         person = get_assigned_person(tg_id)
         if not person:
             await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
@@ -1058,18 +1310,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
             "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
-            reply_markup=user_panel_kb(),
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
     if data == CB_UNDO_CANCEL:
-        # Cancelar deshacer -> volver SIEMPRE al panel de usuario
+        person = get_assigned_person(tg_id)
         await q.edit_message_text(
-            "👤 Panel de usuario",
-            reply_markup=user_panel_kb(),
+            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
+            reply_markup=menu_kb(is_admin(tg_id)),
         )
-        set_state(context, "PANEL", {})
+        set_state(context, "MENU", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):

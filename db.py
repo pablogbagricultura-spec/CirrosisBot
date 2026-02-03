@@ -5,6 +5,8 @@ from psycopg2.extras import RealDictCursor
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+PERSONS_SEED = ["Pablo", "Javi", "Jesus", "Fer", "Cuco", "Oli", "Emilio"]
+
 DRINKS_SEED = [
     ("CORTAITA","Cortaita","BEER",0.25,1.65),
     ("CANA","Caña","BEER",0.25,1.50),
@@ -134,6 +136,15 @@ def init_db():
             );
             """)
 
+            conn.commit()
+
+        # Seed personas
+        with conn.cursor() as cur:
+            for name in PERSONS_SEED:
+                cur.execute(
+                    "INSERT INTO persons(name, status) VALUES (%s, 'NEW') ON CONFLICT (name) DO NOTHING;",
+                    (name,)
+                )
             conn.commit()
 
         # Seed bebidas
@@ -303,7 +314,7 @@ def list_last_events(person_id: int, limit: int = 3):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT e.id, e.quantity, e.consumed_at, dt.label, e.created_at
+            SELECT e.id, e.quantity, e.consumed_at, dt.label
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             WHERE e.person_id=%s AND e.is_void=FALSE
@@ -980,3 +991,257 @@ def admin_delete_person(person_id: int) -> bool:
             cur.execute("DELETE FROM persons WHERE id=%s;", (person_id,))
             conn.commit()
             return cur.rowcount > 0
+
+
+# ---------------- CALENDAR PERIOD RANKING (used by Ranking UI) ----------------
+import calendar as _calendar
+
+def list_calendar_years_with_data():
+    """Calendar years based on consumed_at."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT DISTINCT EXTRACT(YEAR FROM consumed_at)::INT AS y
+            FROM drink_events
+            WHERE is_void=FALSE
+            ORDER BY y DESC;
+            """)
+            return [r["y"] for r in cur.fetchall()]
+
+def user_stats_range(start_date: dt.date, end_date: dt.date):
+    """
+    Stats per ACTIVE person for a calendar date range.
+    - liters_total: sum(volume_liters_total) (only BEER contributes)
+    - active_days: count of distinct consumed_at days with any event
+    - strong_days: count of days where liters_day >= 3.0 (per person)
+    - peak_day / peak_liters: day with max liters_day (per person)
+    Returns list sorted by liters_total desc.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            WITH active_days AS (
+              SELECT e.person_id, e.consumed_at::date AS d
+              FROM drink_events e
+              WHERE e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+              GROUP BY e.person_id, d
+            ),
+            liters_by_day AS (
+              SELECT e.person_id, e.consumed_at::date AS d,
+                     COALESCE(SUM(e.volume_liters_total), 0) AS liters_day
+              FROM drink_events e
+              WHERE e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+              GROUP BY e.person_id, d
+            ),
+            strong_days AS (
+              SELECT person_id, COUNT(*)::INT AS strong_days
+              FROM liters_by_day
+              WHERE liters_day >= 3.0
+              GROUP BY person_id
+            ),
+            peak AS (
+              SELECT DISTINCT ON (person_id)
+                     person_id,
+                     d AS peak_day,
+                     liters_day AS peak_liters
+              FROM liters_by_day
+              ORDER BY person_id, liters_day DESC, d DESC
+            ),
+            totals AS (
+              SELECT p.id AS person_id,
+                     p.name AS person,
+                     COALESCE(SUM(e.volume_liters_total), 0) AS liters_total
+              FROM persons p
+              JOIN drink_events e ON e.person_id=p.id
+              WHERE p.status='ACTIVE' AND e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+              GROUP BY p.id, p.name
+            ),
+            act AS (
+              SELECT person_id, COUNT(*)::INT AS active_days
+              FROM active_days
+              GROUP BY person_id
+            )
+            SELECT
+              t.person_id,
+              t.person,
+              t.liters_total,
+              COALESCE(a.active_days, 0) AS active_days,
+              COALESCE(s.strong_days, 0) AS strong_days,
+              pk.peak_day AS peak_day,
+              COALESCE(pk.peak_liters, 0) AS peak_liters
+            FROM totals t
+            LEFT JOIN act a ON a.person_id=t.person_id
+            LEFT JOIN strong_days s ON s.person_id=t.person_id
+            LEFT JOIN peak pk ON pk.person_id=t.person_id
+            ORDER BY t.liters_total DESC, t.person ASC;
+            """, (start_date, end_date, start_date, end_date, start_date, end_date))
+            rows = cur.fetchall()
+
+    out = []
+    for r in rows:
+        active_days = int(r["active_days"])
+        liters_total = float(r["liters_total"] or 0)
+        avg_active = (liters_total / active_days) if active_days else 0.0
+        out.append({
+            "person_id": r["person_id"],
+            "person": r["person"],
+            "liters_total": liters_total,
+            "active_days": active_days,
+            "avg_liters_per_active_day": avg_active,
+            "strong_days": int(r["strong_days"] or 0),
+            "peak_day": r["peak_day"],
+            "peak_liters": float(r["peak_liters"] or 0),
+        })
+    return out
+
+def user_year_stats(year: int):
+    """
+    Stats per ACTIVE person for a calendar year.
+    Adds: avg_liters_per_calendar_day, strongest/weakest month by liters.
+    """
+    start_date = dt.date(year, 1, 1)
+    end_date = dt.date(year, 12, 31)
+    days_in_year = 366 if _calendar.isleap(year) else 365
+
+    base = user_stats_range(start_date, end_date)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            WITH monthly AS (
+              SELECT e.person_id,
+                     EXTRACT(MONTH FROM e.consumed_at)::INT AS m,
+                     COALESCE(SUM(e.volume_liters_total), 0) AS liters_m
+              FROM drink_events e
+              WHERE e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+              GROUP BY e.person_id, m
+            )
+            SELECT p.id AS person_id,
+                   m.m AS m,
+                   COALESCE(m.liters_m, 0) AS liters_m
+            FROM persons p
+            LEFT JOIN monthly m ON m.person_id=p.id
+            WHERE p.status='ACTIVE'
+            ORDER BY p.id, m.m;
+            """, (start_date, end_date))
+            rows = cur.fetchall()
+
+    monthly_map = {}
+    for r in rows:
+        pid = r["person_id"]
+        if pid not in monthly_map:
+            monthly_map[pid] = {i: 0.0 for i in range(1, 13)}
+        if r["m"] is not None:
+            monthly_map[pid][int(r["m"])] = float(r["liters_m"] or 0)
+
+    for item in base:
+        pid = item["person_id"]
+        liters_total = float(item["liters_total"])
+        item["avg_liters_per_calendar_day"] = liters_total / days_in_year
+
+        months = monthly_map.get(pid, {i: 0.0 for i in range(1, 13)})
+        strongest_m = max(months.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        weakest_m = min(months.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        item["strongest_month"] = strongest_m
+        item["strongest_month_liters"] = months[strongest_m]
+        item["weakest_month"] = weakest_m
+        item["weakest_month_liters"] = months[weakest_m]
+    return base
+
+def group_month_summary(year: int):
+    """
+    Global monthly summaries for a calendar year (group totals).
+    strong day: group liters_day >= 3.0
+    """
+    out = []
+    for m in range(1, 13):
+        days_in_month = _calendar.monthrange(year, m)[1]
+        start_date = dt.date(year, m, 1)
+        end_date = dt.date(year, m, days_in_month)
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                WITH active_days AS (
+                  SELECT e.consumed_at::date AS d
+                  FROM drink_events e
+                  WHERE e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+                  GROUP BY d
+                ),
+                liters_by_day AS (
+                  SELECT e.consumed_at::date AS d,
+                         COALESCE(SUM(e.volume_liters_total), 0) AS liters_day
+                  FROM drink_events e
+                  WHERE e.is_void=FALSE AND e.consumed_at BETWEEN %s AND %s
+                  GROUP BY d
+                )
+                SELECT
+                  COALESCE((SELECT SUM(volume_liters_total) FROM drink_events WHERE is_void=FALSE AND consumed_at BETWEEN %s AND %s), 0) AS liters_total,
+                  COALESCE((SELECT COUNT(*) FROM active_days), 0)::INT AS active_days,
+                  COALESCE((SELECT COUNT(*) FROM liters_by_day WHERE liters_day >= 3.0), 0)::INT AS strong_days
+                """, (start_date, end_date, start_date, end_date, start_date, end_date))
+                r = cur.fetchone()
+
+        liters_total = float(r["liters_total"] or 0)
+        active_days = int(r["active_days"] or 0)
+        strong_days = int(r["strong_days"] or 0)
+        avg_active = (liters_total / active_days) if active_days else 0.0
+        avg_calendar = liters_total / days_in_month
+        zero_days = days_in_month - active_days
+
+        out.append({
+            "month": m,
+            "liters_total": liters_total,
+            "active_days": active_days,
+            "avg_per_active_day": avg_active,
+            "avg_per_calendar_day": avg_calendar,
+            "zero_days": zero_days,
+            "strong_days": strong_days,
+            "days_in_month": days_in_month,
+        })
+    return out
+
+def drink_type_person_totals_range(start_date: dt.date, end_date: dt.date):
+    """Totals per (drink x person) in date range."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.category AS category,
+              dt.label AS label,
+              p.name AS person,
+              COALESCE(SUM(e.quantity), 0)::INT AS unidades,
+              COALESCE(SUM(e.volume_liters_total), 0) AS litros,
+              (dt.volume_liters IS NOT NULL) AS has_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            JOIN persons p ON p.id = e.person_id
+            WHERE e.is_void=FALSE
+              AND e.consumed_at BETWEEN %s AND %s
+              AND p.status='ACTIVE'
+            GROUP BY dt.category, dt.label, p.name, dt.volume_liters
+            HAVING COALESCE(SUM(e.quantity),0) > 0
+            ORDER BY dt.category, dt.label, litros DESC, unidades DESC, p.name ASC;
+            """, (start_date, end_date))
+            return cur.fetchall()
+
+def drink_type_totals_range(start_date: dt.date, end_date: dt.date):
+    """Totals per drink (global) in date range."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.category AS category,
+              dt.label AS label,
+              COALESCE(SUM(e.quantity), 0)::INT AS unidades,
+              COALESCE(SUM(e.volume_liters_total), 0) AS litros,
+              (dt.volume_liters IS NOT NULL) AS has_liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.is_void=FALSE
+              AND e.consumed_at BETWEEN %s AND %s
+            GROUP BY dt.category, dt.label, dt.volume_liters
+            HAVING COALESCE(SUM(e.quantity),0) > 0
+            ORDER BY dt.category, dt.label;
+            """, (start_date, end_date))
+            return cur.fetchall()
