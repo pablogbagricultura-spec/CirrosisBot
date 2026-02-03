@@ -157,48 +157,65 @@ def _month_range(today: dt.date):
 def _year_range(year: int):
     return dt.date(year, 1, 1), dt.date(year, 12, 31)
 
+
 def render_users_block(title: str, rows: list, include_month_extras: bool = False, month_days: int = 0, include_year_extras: bool = False, year: int = None):
+    """
+    Option A layout (tarjeta por usuario):
+      1) "<pos> Nombre — 🧴 X,XX L"
+      2) "• métricas principales (orden fijo)"
+      3) "• pico ..." (semana/mes) o "• mes fuerte/flojo" (año)
+    """
     lines = [title]
     if not rows:
         lines.append("• Nadie ha registrado nada en este periodo.")
         lines.append(_legend_strong_day_short())
         return "\n".join(lines)
 
-    medals = ["🥇","🥈","🥉"]
+    medals = ["🥇", "🥈", "🥉"]
     for i, r in enumerate(rows, start=1):
-        prefix = medals[i-1] if i <= 3 else f"{i}️⃣"
+        prefix = medals[i - 1] if i <= 3 else f"{i}️⃣"
+
         liters = float(r["liters_total"])
         ad = int(r["active_days"])
         avg_ad = float(r["avg_liters_per_active_day"])
         sd = int(r["strong_days"])
+
         peak_day = r.get("peak_day")
         peak_l = float(r.get("peak_liters") or 0)
 
+        # Línea 1
         lines.append(f"{prefix} {r['person']} — 🧴 {_fmt_l(liters)}")
-        base = [f"📆 {ad} días", f"📈 {_fmt_l(avg_ad)}/día", f"🧨 {sd} días fuertes"]
-        lines.append(" · ".join(base))
 
-        if peak_day:
-            try:
-                d = peak_day.strftime("%d/%m")
-            except Exception:
-                d = str(peak_day)
-            lines.append(f"💥 pico: {d} ({_fmt_l(peak_l)})")
+        # Línea 2
+        parts = [f"📆 {ad} días", f"📈 {_fmt_l(avg_ad)}/día"]
 
         if include_month_extras and month_days:
             avg_cd = liters / month_days
             z0 = month_days - ad
-            lines.append(f"🧃 {_fmt_l(avg_cd)}/día (mes) · 🚫 {z0} días 0")
-
-        if include_year_extras and year:
+            parts.append(f"🧃 {_fmt_l(avg_cd)}/día")
+            parts.append(f"🚫 {z0} días 0")
+        elif include_year_extras and year:
             days_in_year = 366 if calendar.isleap(year) else 365
             avg_year = liters / days_in_year
+            parts.append(f"🧃 {_fmt_l(avg_year)}/día")
+
+        parts.append(f"🧨 {sd} días fuertes")
+        lines.append("• " + " · ".join(parts))
+
+        # Línea 3
+        if include_year_extras and year:
             sm = _fmt_month_es(int(r.get("strongest_month", 1)))
             wm = _fmt_month_es(int(r.get("weakest_month", 1)))
             sm_l = float(r.get("strongest_month_liters", 0))
             wm_l = float(r.get("weakest_month_liters", 0))
-            lines.append(f"🧃 {_fmt_l(avg_year)}/día (año)")
-            lines.append(f"💥 mes más fuerte: {sm} ({_fmt_l(sm_l)}) · 🧊 mes más flojo: {wm} ({_fmt_l(wm_l)})")
+            lines.append(f"• 💥 mes más fuerte: {sm} ({_fmt_l(sm_l)}) · 🧊 mes más flojo: {wm} ({_fmt_l(wm_l)})")
+        else:
+            if peak_day:
+                try:
+                    d = peak_day.strftime("%d/%m")
+                except Exception:
+                    d = str(peak_day)
+                lines.append(f"• 💥 pico: {d} ({_fmt_l(peak_l)})")
 
         lines.append("")
 
@@ -241,9 +258,11 @@ def render_prev_year_extra(year: int):
     monthly = "\n".join(lines).strip()
     return annual + "\n\n" + monthly
 
+
 def render_types_block(title: str, start_date: dt.date, end_date: dt.date, period_label: str):
     totals = drink_type_totals_range(start_date, end_date)
     per_person = drink_type_person_totals_range(start_date, end_date)
+
     key = lambda r: (r["category"], r["label"])
     totals_map = {(t["category"], t["label"]): t for t in totals}
     persons_map = {}
@@ -259,7 +278,7 @@ def render_types_block(title: str, start_date: dt.date, end_date: dt.date, perio
         has_liters = bool(t["has_liters"])
         header_icon = "🍺" if cat == "BEER" else "🥃"
         lines.append("")
-        lines.append(f"{header_icon} {label} ({'litros' if has_liters else 'unidades'})")
+        lines.append(f"{header_icon} {label} ({'litros + cervezas' if has_liters else 'unidades'})")
 
         users = persons_map.get((cat, label), [])
         if has_liters:
@@ -267,16 +286,20 @@ def render_types_block(title: str, start_date: dt.date, end_date: dt.date, perio
         else:
             users.sort(key=lambda r: (int(r["unidades"] or 0), r["person"]), reverse=True)
 
-        medals = ["🥇","🥈","🥉"]
+        medals = ["🥇", "🥈", "🥉"]
         for i, u in enumerate(users, start=1):
-            prefix = medals[i-1] if i <= 3 else f"{i}️⃣"
+            prefix = medals[i - 1] if i <= 3 else f"{i}️⃣"
             if has_liters:
-                lines.append(f"{prefix} {u['person']} — 🧴 {_fmt_l(float(u['litros'] or 0))}")
+                liters = _fmt_l(float(u["litros"] or 0))
+                beers = int(u["unidades"] or 0)
+                lines.append(f"{prefix} {u['person']} — 🧴 {liters} · 🍺 {beers}")
             else:
                 lines.append(f"{prefix} {u['person']} — 🍸 {int(u['unidades'])} uds")
 
         if has_liters:
-            lines.append(f"📊 Total {label} {period_label}: {_fmt_l(float(t['litros'] or 0))}")
+            total_l = _fmt_l(float(t["litros"] or 0))
+            total_u = int(t["unidades"] or 0)
+            lines.append(f"📊 Total {label} {period_label}: 🧴 {total_l} · 🍺 {total_u}")
         else:
             lines.append(f"📊 Total {label} {period_label}: {int(t['unidades'])} uds")
 
@@ -299,6 +322,7 @@ def render_types_ranking_current(today: dt.date):
 def user_panel_kb():
     rows = [
         [InlineKeyboardButton("🕒 Mis últimas bebidas", callback_data=CB_PANEL_DRINKS)],
+        [InlineKeyboardButton("↩️ Deshacer bebidas", callback_data=CB_MENU_UNDO)],
         [InlineKeyboardButton("⬅️ Volver", callback_data="back:menu")],
     ]
     return kb(rows)
@@ -358,10 +382,10 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = e["consumed_at"].strftime("%d/%m/%Y")
+        when = e["consumed_at"].astimezone(TZ).strftime("%d/%m %H:%M")
         label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
-    rows.append([InlineKeyboardButton("⬅️ Menú", callback_data="back:menu")])
+    rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data="back:panel")])
     return kb(rows)
 
 def undo_confirm_kb(event_id: int):
@@ -709,6 +733,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=menu_kb(is_admin(tg_id)),
         )
         set_state(context, "MENU", {})
+        return
+
+    if data == "back:panel":
+        person = get_assigned_person(tg_id)
+        if not person:
+            await q.edit_message_text("No estás asignado. Espera a que el admin te apruebe.")
+            set_state(context, "PENDING", {})
+            return
+        if person.get("status") == "INACTIVE":
+            await q.edit_message_text("🚫 Estás suspendido. El admin tiene que reactivarte para volver a usar el bot.")
+            set_state(context, "SUSPENDED", {})
+            return
+        await q.edit_message_text("👤 Panel de usuario", reply_markup=user_panel_kb())
+        set_state(context, "PANEL", {})
         return
 
     if data == "back:cat":
@@ -1309,19 +1347,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         person = get_assigned_person(tg_id)
         ok = void_event(person["id"], tg_id, event_id)
         await q.edit_message_text(
-            "✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            ("✅ Entrada eliminada." if ok else "⚠️ No se pudo eliminar.") + "\n\n👤 Panel de usuario",
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
     if data == CB_UNDO_CANCEL:
         person = get_assigned_person(tg_id)
         await q.edit_message_text(
-            f"Vale, no toco nada 🙂\n\n¿Qué quieres hacer?",
-            reply_markup=menu_kb(is_admin(tg_id)),
+            "Vale, no toco nada 🙂\n\n👤 Panel de usuario",
+            reply_markup=user_panel_kb(),
         )
-        set_state(context, "MENU", {})
+        set_state(context, "PANEL", {})
         return
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
