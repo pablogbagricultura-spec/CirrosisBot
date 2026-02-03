@@ -404,7 +404,7 @@ def date_kb():
 def undo_list_kb(events):
     rows = []
     for e in events:
-        when = _fmt_ts(e.get("consumed_at"))
+        when = _fmt_ts(e.get("created_at") or e.get("consumed_at"))
         label = f"{e['quantity']} × {e['label']} — {when}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{CB_UNDO_PICK}{e['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Volver al panel", callback_data="back:panel")])

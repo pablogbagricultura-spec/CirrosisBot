@@ -310,11 +310,11 @@ def insert_event(person_id: int, telegram_user_id: int, drink_type_id: int, quan
             """, (person_id, telegram_user_id, drink_type_id, quantity, consumed_at, year_start, volume_total, price_total))
             conn.commit()
 
-def list_last_events(person_id: int, limit: int = 3):
+def list_last_events(person_id: int, limit: int = 5):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT e.id, e.quantity, e.consumed_at, dt.label
+            SELECT e.id, e.quantity, e.consumed_at, e.created_at, dt.label
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
             WHERE e.person_id=%s AND e.is_void=FALSE
@@ -322,6 +322,7 @@ def list_last_events(person_id: int, limit: int = 3):
             LIMIT %s;
             """, (person_id, limit))
             return cur.fetchall()
+
 
 
 def list_user_events_page(person_id: int, limit: int = 15, before_id: int | None = None, after_id: int | None = None):
