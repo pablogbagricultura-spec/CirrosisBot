@@ -789,11 +789,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == CB_MENU_UNDO:
         person = get_assigned_person(tg_id)
-        events = list_last_events(person["id"], 3)
-        if not events:
-            await q.edit_message_text("No tienes entradas recientes para deshacer.", reply_markup=menu_kb(is_admin(tg_id)))
+        if not person and not is_admin(tg_id):
+            await q.edit_message_text(
+                "⚠️ Aún no estás asignado a ningún usuario. Pide al admin que te asigne.",
+                reply_markup=menu_kb(is_admin(tg_id))
+            )
             set_state(context, "MENU", {})
             return
+
+        # Muestra las últimas 5 entradas del usuario asignado (más recientes primero)
+        events = list_last_events(person["id"], 5) if person else []
+        if not events:
+            await q.edit_message_text(
+                "No tienes entradas recientes para deshacer.",
+                reply_markup=user_panel_kb()
+            )
+            set_state(context, "PANEL", {})
+            return
+
+        await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
+        set_state(context, "UNDO_PICK", {})
+        return
         await q.edit_message_text("Elige cuál quieres eliminar:", reply_markup=undo_list_kb(events))
         set_state(context, "UNDO_PICK", {})
         return
