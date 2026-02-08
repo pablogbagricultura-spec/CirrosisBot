@@ -15,7 +15,7 @@ from db import (
     list_pending_telegrams,
 
     # Bebidas / eventos
-    list_drink_types, insert_event, list_last_events, list_user_events_page, void_event,
+    list_drink_types, get_drink_type, insert_event, list_last_events, get_person_beer_units_in_notice_window, list_user_events_page, void_event,
 
     # Informes / rankings
     list_years_with_data, report_year,
@@ -46,7 +46,6 @@ from db import (
     group_month_summary,
     drink_type_person_totals_range,
     drink_type_totals_range,
-    get_person_beer_units_on_date,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -489,9 +488,18 @@ def get_state(context: ContextTypes.DEFAULT_TYPE):
 
 MILESTONES_UNITS = [1, 50, 100, 200, 500]
 
-# --------- Frases privadas humillantes por volumen diario (cervezas) ---------
+# Reset del "día de avisos" (mensajes privados/públicos): a las 09:00 hora local
+NOTICE_RESET_HOUR = 9
 
-PRIVATE_PHRASES_L1 = [
+# Frases privadas humillantes (25 por nivel). Se elige según TOTAL diario para avisos.
+# Niveles por total:
+# 1 -> lvl1
+# 2-3 -> lvl2
+# 4-6 -> lvl3
+# 7-9 -> lvl4
+# 10+ -> lvl5
+
+PRIVATE_LVL1 = [
     "🍺 Una cerveza. Has bebido sin motivo y sin orgullo.",
     "😏 Una. Ni disfrute ni control: costumbre pura.",
     "📌 Registrado. Esto es beber por aburrimiento.",
@@ -519,7 +527,7 @@ PRIVATE_PHRASES_L1 = [
     "😐 Una cerveza. Y ya es demasiado.",
 ]
 
-PRIVATE_PHRASES_L2 = [
+PRIVATE_LVL2 = [
     "😬 Dos o tres. Aquí empieza lo patético.",
     "🍺🍺 Registrado. El autocontrol ha salido a fumar.",
     "🤨 Dos cervezas. Ya te has soltado demasiado.",
@@ -547,7 +555,7 @@ PRIVATE_PHRASES_L2 = [
     "🧠 El hígado ya no confía.",
 ]
 
-PRIVATE_PHRASES_L3 = [
+PRIVATE_LVL3 = [
     "🤡 Cuatro o más. Esto ya es torpeza.",
     "🍺🍺🍺 Registrado. Has decidido no parar.",
     "📉 Aquí ya no hay excusas.",
@@ -575,7 +583,7 @@ PRIVATE_PHRASES_L3 = [
     "🧠 El hígado se prepara para sufrir.",
 ]
 
-PRIVATE_PHRASES_L4 = [
+PRIVATE_LVL4 = [
     "💀 Siete o más. Esto ya es bochornoso.",
     "🍺🍺🍺🍺🍺🍺🍺 Registrado. Has perdido la dignidad.",
     "🚑 Esto ya es decadencia.",
@@ -603,7 +611,7 @@ PRIVATE_PHRASES_L4 = [
     "💀 Has llegado demasiado lejos.",
 ]
 
-PRIVATE_PHRASES_L5 = [
+PRIVATE_LVL5 = [
     "☠️ Diez o más. Esto ya te define.",
     "🍺🍺🍺🍺🍺🍺🍺🍺🍺🍺 Registrado. No sabes parar.",
     "🤮 Esto es patético.",
@@ -631,36 +639,26 @@ PRIVATE_PHRASES_L5 = [
     "☠️ Esto ya es indefendible.",
 ]
 
+# Fallback para bebidas OTHER (no entran en el contador de "cervezas")
 OTHER_FUN_PHRASES = [
     "✅ Apuntado.",
-    "📌 Registrado. Lo que tú digas.",
-    "😐 Guardado. Siguiente.",
-    "🤨 Anotado. Sin comentarios.",
-    "✅ Hecho. Ya está.",
+    "📌 Registrado.",
+    "🍻 Hecho.",
+    "😐 Guardado.",
+    "📊 Anotado.",
 ]
 
-def _beer_day_level(total_beers_today: int) -> int:
-    if total_beers_today >= 10:
-        return 5
-    if total_beers_today >= 7:
-        return 4
-    if total_beers_today >= 4:
-        return 3
-    if total_beers_today >= 2:
-        return 2
-    return 1
+def pick_private_phrase_for_beer_total(total_beers_today: int) -> str:
+    if total_beers_today <= 1:
+        return random.choice(PRIVATE_LVL1)
+    if 2 <= total_beers_today <= 3:
+        return random.choice(PRIVATE_LVL2)
+    if 4 <= total_beers_today <= 6:
+        return random.choice(PRIVATE_LVL3)
+    if 7 <= total_beers_today <= 9:
+        return random.choice(PRIVATE_LVL4)
+    return random.choice(PRIVATE_LVL5)
 
-def pick_private_phrase_for_beers(total_beers_today: int) -> str:
-    lvl = _beer_day_level(total_beers_today)
-    if lvl == 5:
-        return random.choice(PRIVATE_PHRASES_L5)
-    if lvl == 4:
-        return random.choice(PRIVATE_PHRASES_L4)
-    if lvl == 3:
-        return random.choice(PRIVATE_PHRASES_L3)
-    if lvl == 2:
-        return random.choice(PRIVATE_PHRASES_L2)
-    return random.choice(PRIVATE_PHRASES_L1)
 
 def build_achievement_messages(person_name: str, year_start: int, qty_added: int, after_units: int, is_first: bool):
     msgs = []
@@ -1520,11 +1518,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
-        if sdata.get("cat") == "BEER":
-            total_beers_today = get_person_beer_units_on_date(person["id"], consumed_at)
-            phrase = pick_private_phrase_for_beers(int(total_beers_today))
+
+        t = get_drink_type(int(sdata["drink_type_id"]))
+        if t and t.get("category") == "BEER":
+            total_beers = get_person_beer_units_in_notice_window(person["id"], dt.datetime.now(TZ), reset_hour=NOTICE_RESET_HOUR)
+            phrase = pick_private_phrase_for_beer_total(int(total_beers))
         else:
             phrase = random.choice(OTHER_FUN_PHRASES)
+
         base_msg = phrase + f"\n\n✅ Apuntado ({when})."
         await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
@@ -1611,11 +1612,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        if sdata.get("cat") == "BEER":
-            total_beers_today = get_person_beer_units_on_date(person["id"], consumed_at)
-            phrase = pick_private_phrase_for_beers(int(total_beers_today))
+
+        t = get_drink_type(int(sdata["drink_type_id"]))
+        if t and t.get("category") == "BEER":
+            total_beers = get_person_beer_units_in_notice_window(person["id"], dt.datetime.now(TZ), reset_hour=NOTICE_RESET_HOUR)
+            phrase = pick_private_phrase_for_beer_total(int(total_beers))
         else:
             phrase = random.choice(OTHER_FUN_PHRASES)
+
         await update.message.reply_text(phrase + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 

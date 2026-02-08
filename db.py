@@ -281,7 +281,7 @@ def get_drink_type(drink_type_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT id, label, volume_liters, unit_price_eur
+            SELECT id, label, category, volume_liters, unit_price_eur
             FROM drink_types
             WHERE id=%s;
             """, (drink_type_id,))
@@ -325,21 +325,47 @@ def list_last_events(person_id: int, limit: int = 5):
 
 
 
-def get_person_beer_units_on_date(person_id: int, day: dt.date) -> int:
-    """Total BEER units (sum of quantity) for a person on a given consumed_at date (non-void)."""
+
+def get_person_beer_units_in_notice_window(person_id: int, now_ts: dt.datetime, reset_hour: int = 9) -> int:
+    """Total de 'cervezas' (unidades) para avisos, con reset diario a las {reset_hour}:00.
+
+    Regla:
+    - Para avisos, el 'día' empieza a las reset_hour:00 (hora local del timestamp).
+    - Todo lo registrado entre 00:00 y reset_hour-1:59 cuenta como el día anterior.
+    Cuenta solo eventos:
+    - no anulados
+    - categoría BEER
+    - created_at dentro de [start_ts, end_ts)
+    """
+    if not isinstance(now_ts, dt.datetime):
+        raise TypeError("now_ts debe ser datetime")
+
+    # Si viene sin tzinfo, lo tratamos como 'local naive'
+    tz = now_ts.tzinfo
+    local_date = now_ts.date()
+    if now_ts.hour < reset_hour:
+        local_date = local_date - dt.timedelta(days=1)
+
+    start_ts = dt.datetime.combine(local_date, dt.time(reset_hour, 0, 0))
+    if tz is not None:
+        start_ts = start_ts.replace(tzinfo=tz)
+    end_ts = start_ts + dt.timedelta(days=1)
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT COALESCE(SUM(e.quantity), 0)::INT AS units
+            SELECT COALESCE(SUM(e.quantity), 0) AS unidades
             FROM drink_events e
             JOIN drink_types dt ON dt.id = e.drink_type_id
-            WHERE e.person_id = %s
-              AND e.is_void = FALSE
-              AND e.consumed_at = %s
-              AND dt.category = 'BEER';
-            """, (person_id, day))
+            WHERE e.person_id=%s
+              AND e.is_void=FALSE
+              AND dt.category='BEER'
+              AND e.created_at >= %s
+              AND e.created_at < %s;
+            """, (person_id, start_ts, end_ts))
             row = cur.fetchone()
-            return int(row["units"] or 0)
+            return int(row["unidades"] or 0)
+
 
 
 def list_user_events_page(person_id: int, limit: int = 15, before_id: int | None = None, after_id: int | None = None):
