@@ -325,6 +325,23 @@ def list_last_events(person_id: int, limit: int = 5):
 
 
 
+def get_person_beer_units_on_date(person_id: int, day: dt.date) -> int:
+    """Total BEER units (sum of quantity) for a person on a given consumed_at date (non-void)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT COALESCE(SUM(e.quantity), 0)::INT AS units
+            FROM drink_events e
+            JOIN drink_types dt ON dt.id = e.drink_type_id
+            WHERE e.person_id = %s
+              AND e.is_void = FALSE
+              AND e.consumed_at = %s
+              AND dt.category = 'BEER';
+            """, (person_id, day))
+            row = cur.fetchone()
+            return int(row["units"] or 0)
+
+
 def list_user_events_page(person_id: int, limit: int = 15, before_id: int | None = None, after_id: int | None = None):
     """
     Devuelve eventos (bebidas) del usuario con cantidad y hora (created_at), para paginación.

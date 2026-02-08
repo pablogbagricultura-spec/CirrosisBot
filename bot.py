@@ -46,6 +46,7 @@ from db import (
     group_month_summary,
     drink_type_person_totals_range,
     drink_type_totals_range,
+    get_person_beer_units_on_date,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -488,13 +489,178 @@ def get_state(context: ContextTypes.DEFAULT_TYPE):
 
 MILESTONES_UNITS = [1, 50, 100, 200, 500]
 
-FUN_PHRASES = [
-    "🍻 Apuntado. Esto va cogiendo ritmo…",
-    "✅ Hecho. La ciencia avanza.",
-    "📌 Guardado. La libreta de la vergüenza no perdona.",
-    "😄 Apuntado. Nadie te juzga (bueno… un poco).",
-    "✅ Listo. CirrosisBot lo ha visto todo.",
+# --------- Frases privadas humillantes por volumen diario (cervezas) ---------
+
+PRIVATE_PHRASES_L1 = [
+    "🍺 Una cerveza. Has bebido sin motivo y sin orgullo.",
+    "😏 Una. Ni disfrute ni control: costumbre pura.",
+    "📌 Registrado. Esto es beber por aburrimiento.",
+    "🙂 Una cerveza. Decisión pequeña, decepción constante.",
+    "🤏 Una. Cantidad ridícula, necesidad real.",
+    "🍻 Una. No suma nada, pero resta igual.",
+    "🧠 El hígado no sufre, pero ya sospecha.",
+    "😐 Una cerveza. Has empezado algo innecesario.",
+    "📊 Una. Aun así has venido a apuntarla.",
+    "🙄 Una cerveza. Ni siquiera sabes parar antes.",
+    "🍺 Una. El gesto automático del día.",
+    "😏 Registrada. Beber sin ganas también cuenta.",
+    "📉 Una cerveza. Impacto bajo, imagen peor.",
+    "🙂 Una. No es grave, es triste.",
+    "🤨 Una cerveza. Y aun así no era necesaria.",
+    "🍻 Una. El mínimo para decepcionar.",
+    "🧠 El hígado no aplaude.",
+    "😐 Una cerveza. Empiezas flojo y sin excusa.",
+    "📌 Una. Esto ya dice cosas de ti.",
+    "🙃 Una cerveza. Has abierto la puerta tú solo.",
+    "🍺 Una. Costumbre antes que placer.",
+    "😏 Registrado. Bebes porque siempre bebes.",
+    "📊 Una cerveza. El principio de algo inútil.",
+    "🤏 Una. Has bajado el listón sin esfuerzo.",
+    "😐 Una cerveza. Y ya es demasiado.",
 ]
+
+PRIVATE_PHRASES_L2 = [
+    "😬 Dos o tres. Aquí empieza lo patético.",
+    "🍺🍺 Registrado. El autocontrol ha salido a fumar.",
+    "🤨 Dos cervezas. Ya te has soltado demasiado.",
+    "📉 Esto ya no es casualidad, es debilidad.",
+    "🙄 Dos o tres. El clásico punto donde te mientes.",
+    "🧠 El hígado empieza a rendirse contigo.",
+    "😏 Registrado. Ya no engañas a nadie.",
+    "🍻 Dos o tres. Justo para perder respeto.",
+    "📊 Empiezas a ser predecible.",
+    "😐 Dos cervezas. Ya has bajado el nivel.",
+    "🤦‍♂️ Dos o tres. Y aún crees que controlas.",
+    "🍺🍺 Registrado. Moderación ficticia.",
+    "📉 Aquí ya se nota el patrón.",
+    "😬 Dos cervezas y ya te relajas demasiado.",
+    "🧠 El hígado toma nota… con resignación.",
+    "🙃 Dos o tres. Esto ya es rutina.",
+    "📊 Has empezado a decepcionar.",
+    "😏 Registrado. El principio del desastre.",
+    "🍻 Dos o tres. Ya no paras bien.",
+    "🤨 Esto ya no es una excepción.",
+    "📉 Dos cervezas. Ya vas cuesta abajo.",
+    "😐 El control empieza a desaparecer.",
+    "🍺🍺 Esto ya no es elegante.",
+    "🙄 Dos o tres. Mal punto, mala señal.",
+    "🧠 El hígado ya no confía.",
+]
+
+PRIVATE_PHRASES_L3 = [
+    "🤡 Cuatro o más. Esto ya es torpeza.",
+    "🍺🍺🍺 Registrado. Has decidido no parar.",
+    "📉 Aquí ya no hay excusas.",
+    "😐 Cuatro cervezas. Ya eres ese.",
+    "🫠 El hígado ha perdido toda fe.",
+    "🙄 Registrado. Has cruzado una línea estúpida.",
+    "🍻 Esto ya no es disfrutar.",
+    "📊 Empiezas a dar vergüenza.",
+    "🤦‍♂️ Nadie responsable llega aquí.",
+    "😬 Cuatro o cinco. Ya das pena.",
+    "🧠 El hígado se resigna.",
+    "🙃 Has elegido mal otra vez.",
+    "🍺🍺🍺🍺 Esto ya es insistir.",
+    "📉 El control ha muerto.",
+    "😐 Cuatro cervezas. Esto ya es problema.",
+    "🤡 Registrado. Decisiones lamentables.",
+    "🫠 El hígado se rinde.",
+    "📊 Ya no eres ejemplo de nada.",
+    "🍻 Has pasado de beber a empeñarte.",
+    "😬 Aquí ya nadie te defiende.",
+    "📉 Esto ya es hábito feo.",
+    "🤦‍♂️ Te has dejado ir.",
+    "😐 Cuatro cervezas. Mal camino.",
+    "🍺🍺🍺 Esto ya no es normal.",
+    "🧠 El hígado se prepara para sufrir.",
+]
+
+PRIVATE_PHRASES_L4 = [
+    "💀 Siete o más. Esto ya es bochornoso.",
+    "🍺🍺🍺🍺🍺🍺🍺 Registrado. Has perdido la dignidad.",
+    "🚑 Esto ya es decadencia.",
+    "🤮 Has seguido cuando ya no había nada.",
+    "🪦 El autocontrol murió hace rato.",
+    "📉 Esto ya es lamentable.",
+    "😵 Registrado. Has ignorado todas las señales.",
+    "💊 El hígado está pagando tu estupidez.",
+    "🤡 Esto ya es ridículo.",
+    "🚨 Siete cervezas. Nadie te respeta.",
+    "📊 Has cruzado el límite.",
+    "😬 Esto ya da asco.",
+    "🍻 Has tocado fondo provisional.",
+    "📉 Aquí ya no hay vuelta elegante.",
+    "🧠 El hígado está solo.",
+    "🤮 Esto ya no es ocio.",
+    "😵 Has perdido el control completamente.",
+    "📊 Esto ya es historial.",
+    "🤡 Has elegido mal cada paso.",
+    "🚑 Esto debería preocuparte.",
+    "📉 Ya no hay ironía.",
+    "😐 Siete cervezas. Punto.",
+    "🍺🍺🍺🍺🍺🍺🍺 Esto es un desastre.",
+    "🪦 El respeto se ha ido.",
+    "💀 Has llegado demasiado lejos.",
+]
+
+PRIVATE_PHRASES_L5 = [
+    "☠️ Diez o más. Esto ya te define.",
+    "🍺🍺🍺🍺🍺🍺🍺🍺🍺🍺 Registrado. No sabes parar.",
+    "🤮 Esto es patético.",
+    "📉 Has abandonado cualquier control.",
+    "🚑 Nadie responsable llega aquí.",
+    "🪦 El hígado se ha rendido.",
+    "😵 Esto ya es vergonzoso.",
+    "📊 Has cruzado el ridículo.",
+    "🤡 Esto debería darte vergüenza mañana.",
+    "💀 Diez cervezas. Esto es decadencia.",
+    "🚨 Ya no hay excusa posible.",
+    "🧠 El hígado ha dicho basta.",
+    "📉 Esto ya es una mala versión de ti.",
+    "🤮 Has insistido cuando ya estabas mal.",
+    "🍻 Esto ya no es disfrute.",
+    "☠️ Has tocado fondo real.",
+    "😬 Esto no se defiende.",
+    "📊 Esto ya es un problema serio.",
+    "🪦 Has perdido todo control.",
+    "💀 Esto ya no es gracioso.",
+    "🚑 Esto debería alarmarte.",
+    "🤡 Has quedado retratado.",
+    "📉 Diez o más. Mal final.",
+    "😵 Te has abandonado.",
+    "☠️ Esto ya es indefendible.",
+]
+
+OTHER_FUN_PHRASES = [
+    "✅ Apuntado.",
+    "📌 Registrado. Lo que tú digas.",
+    "😐 Guardado. Siguiente.",
+    "🤨 Anotado. Sin comentarios.",
+    "✅ Hecho. Ya está.",
+]
+
+def _beer_day_level(total_beers_today: int) -> int:
+    if total_beers_today >= 10:
+        return 5
+    if total_beers_today >= 7:
+        return 4
+    if total_beers_today >= 4:
+        return 3
+    if total_beers_today >= 2:
+        return 2
+    return 1
+
+def pick_private_phrase_for_beers(total_beers_today: int) -> str:
+    lvl = _beer_day_level(total_beers_today)
+    if lvl == 5:
+        return random.choice(PRIVATE_PHRASES_L5)
+    if lvl == 4:
+        return random.choice(PRIVATE_PHRASES_L4)
+    if lvl == 3:
+        return random.choice(PRIVATE_PHRASES_L3)
+    if lvl == 2:
+        return random.choice(PRIVATE_PHRASES_L2)
+    return random.choice(PRIVATE_PHRASES_L1)
 
 def build_achievement_messages(person_name: str, year_start: int, qty_added: int, after_units: int, is_first: bool):
     msgs = []
@@ -1354,7 +1520,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
-        base_msg = random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when})."
+        if sdata.get("cat") == "BEER":
+            total_beers_today = get_person_beer_units_on_date(person["id"], consumed_at)
+            phrase = pick_private_phrase_for_beers(int(total_beers_today))
+        else:
+            phrase = random.choice(OTHER_FUN_PHRASES)
+        base_msg = phrase + f"\n\n✅ Apuntado ({when})."
         await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
@@ -1440,7 +1611,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-        await update.message.reply_text(random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        if sdata.get("cat") == "BEER":
+            total_beers_today = get_person_beer_units_on_date(person["id"], consumed_at)
+            phrase = pick_private_phrase_for_beers(int(total_beers_today))
+        else:
+            phrase = random.choice(OTHER_FUN_PHRASES)
+        await update.message.reply_text(phrase + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
         # Logros
