@@ -15,7 +15,7 @@ from db import (
     list_pending_telegrams,
 
     # Bebidas / eventos
-    list_drink_types, get_drink_type, insert_event, list_last_events, get_person_beer_units_in_notice_window, list_user_events_page, void_event,
+    list_drink_types, insert_event, list_last_events, list_user_events_page, void_event,
 
     # Informes / rankings
     list_years_with_data, report_year,
@@ -46,6 +46,13 @@ from db import (
     group_month_summary,
     drink_type_person_totals_range,
     drink_type_totals_range,
+    beer_year_start_for,
+    weekly_summary_already_sent,
+    mark_weekly_summary_sent,
+    beer_year_summary_already_sent,
+    mark_beer_year_summary_sent,
+    period_activity_summary,
+    range_drinks_totals,
 )
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -488,177 +495,13 @@ def get_state(context: ContextTypes.DEFAULT_TYPE):
 
 MILESTONES_UNITS = [1, 50, 100, 200, 500]
 
-# Reset del "día de avisos" (mensajes privados/públicos): a las 09:00 hora local
-NOTICE_RESET_HOUR = 9
-
-# Frases privadas humillantes (25 por nivel). Se elige según TOTAL diario para avisos.
-# Niveles por total:
-# 1 -> lvl1
-# 2-3 -> lvl2
-# 4-6 -> lvl3
-# 7-9 -> lvl4
-# 10+ -> lvl5
-
-PRIVATE_LVL1 = [
-    "🍺 Una cerveza. Has bebido sin motivo y sin orgullo.",
-    "😏 Una. Ni disfrute ni control: costumbre pura.",
-    "📌 Registrado. Esto es beber por aburrimiento.",
-    "🙂 Una cerveza. Decisión pequeña, decepción constante.",
-    "🤏 Una. Cantidad ridícula, necesidad real.",
-    "🍻 Una. No suma nada, pero resta igual.",
-    "🧠 El hígado no sufre, pero ya sospecha.",
-    "😐 Una cerveza. Has empezado algo innecesario.",
-    "📊 Una. Aun así has venido a apuntarla.",
-    "🙄 Una cerveza. Ni siquiera sabes parar antes.",
-    "🍺 Una. El gesto automático del día.",
-    "😏 Registrada. Beber sin ganas también cuenta.",
-    "📉 Una cerveza. Impacto bajo, imagen peor.",
-    "🙂 Una. No es grave, es triste.",
-    "🤨 Una cerveza. Y aun así no era necesaria.",
-    "🍻 Una. El mínimo para decepcionar.",
-    "🧠 El hígado no aplaude.",
-    "😐 Una cerveza. Empiezas flojo y sin excusa.",
-    "📌 Una. Esto ya dice cosas de ti.",
-    "🙃 Una cerveza. Has abierto la puerta tú solo.",
-    "🍺 Una. Costumbre antes que placer.",
-    "😏 Registrado. Bebes porque siempre bebes.",
-    "📊 Una cerveza. El principio de algo inútil.",
-    "🤏 Una. Has bajado el listón sin esfuerzo.",
-    "😐 Una cerveza. Y ya es demasiado.",
+FUN_PHRASES = [
+    "🍻 Apuntado. Esto va cogiendo ritmo…",
+    "✅ Hecho. La ciencia avanza.",
+    "📌 Guardado. La libreta de la vergüenza no perdona.",
+    "😄 Apuntado. Nadie te juzga (bueno… un poco).",
+    "✅ Listo. CirrosisBot lo ha visto todo.",
 ]
-
-PRIVATE_LVL2 = [
-    "😬 Dos o tres. Aquí empieza lo patético.",
-    "🍺🍺 Registrado. El autocontrol ha salido a fumar.",
-    "🤨 Dos cervezas. Ya te has soltado demasiado.",
-    "📉 Esto ya no es casualidad, es debilidad.",
-    "🙄 Dos o tres. El clásico punto donde te mientes.",
-    "🧠 El hígado empieza a rendirse contigo.",
-    "😏 Registrado. Ya no engañas a nadie.",
-    "🍻 Dos o tres. Justo para perder respeto.",
-    "📊 Empiezas a ser predecible.",
-    "😐 Dos cervezas. Ya has bajado el nivel.",
-    "🤦‍♂️ Dos o tres. Y aún crees que controlas.",
-    "🍺🍺 Registrado. Moderación ficticia.",
-    "📉 Aquí ya se nota el patrón.",
-    "😬 Dos cervezas y ya te relajas demasiado.",
-    "🧠 El hígado toma nota… con resignación.",
-    "🙃 Dos o tres. Esto ya es rutina.",
-    "📊 Has empezado a decepcionar.",
-    "😏 Registrado. El principio del desastre.",
-    "🍻 Dos o tres. Ya no paras bien.",
-    "🤨 Esto ya no es una excepción.",
-    "📉 Dos cervezas. Ya vas cuesta abajo.",
-    "😐 El control empieza a desaparecer.",
-    "🍺🍺 Esto ya no es elegante.",
-    "🙄 Dos o tres. Mal punto, mala señal.",
-    "🧠 El hígado ya no confía.",
-]
-
-PRIVATE_LVL3 = [
-    "🤡 Cuatro o más. Esto ya es torpeza.",
-    "🍺🍺🍺 Registrado. Has decidido no parar.",
-    "📉 Aquí ya no hay excusas.",
-    "😐 Cuatro cervezas. Ya eres ese.",
-    "🫠 El hígado ha perdido toda fe.",
-    "🙄 Registrado. Has cruzado una línea estúpida.",
-    "🍻 Esto ya no es disfrutar.",
-    "📊 Empiezas a dar vergüenza.",
-    "🤦‍♂️ Nadie responsable llega aquí.",
-    "😬 Cuatro o cinco. Ya das pena.",
-    "🧠 El hígado se resigna.",
-    "🙃 Has elegido mal otra vez.",
-    "🍺🍺🍺🍺 Esto ya es insistir.",
-    "📉 El control ha muerto.",
-    "😐 Cuatro cervezas. Esto ya es problema.",
-    "🤡 Registrado. Decisiones lamentables.",
-    "🫠 El hígado se rinde.",
-    "📊 Ya no eres ejemplo de nada.",
-    "🍻 Has pasado de beber a empeñarte.",
-    "😬 Aquí ya nadie te defiende.",
-    "📉 Esto ya es hábito feo.",
-    "🤦‍♂️ Te has dejado ir.",
-    "😐 Cuatro cervezas. Mal camino.",
-    "🍺🍺🍺 Esto ya no es normal.",
-    "🧠 El hígado se prepara para sufrir.",
-]
-
-PRIVATE_LVL4 = [
-    "💀 Siete o más. Esto ya es bochornoso.",
-    "🍺🍺🍺🍺🍺🍺🍺 Registrado. Has perdido la dignidad.",
-    "🚑 Esto ya es decadencia.",
-    "🤮 Has seguido cuando ya no había nada.",
-    "🪦 El autocontrol murió hace rato.",
-    "📉 Esto ya es lamentable.",
-    "😵 Registrado. Has ignorado todas las señales.",
-    "💊 El hígado está pagando tu estupidez.",
-    "🤡 Esto ya es ridículo.",
-    "🚨 Siete cervezas. Nadie te respeta.",
-    "📊 Has cruzado el límite.",
-    "😬 Esto ya da asco.",
-    "🍻 Has tocado fondo provisional.",
-    "📉 Aquí ya no hay vuelta elegante.",
-    "🧠 El hígado está solo.",
-    "🤮 Esto ya no es ocio.",
-    "😵 Has perdido el control completamente.",
-    "📊 Esto ya es historial.",
-    "🤡 Has elegido mal cada paso.",
-    "🚑 Esto debería preocuparte.",
-    "📉 Ya no hay ironía.",
-    "😐 Siete cervezas. Punto.",
-    "🍺🍺🍺🍺🍺🍺🍺 Esto es un desastre.",
-    "🪦 El respeto se ha ido.",
-    "💀 Has llegado demasiado lejos.",
-]
-
-PRIVATE_LVL5 = [
-    "☠️ Diez o más. Esto ya te define.",
-    "🍺🍺🍺🍺🍺🍺🍺🍺🍺🍺 Registrado. No sabes parar.",
-    "🤮 Esto es patético.",
-    "📉 Has abandonado cualquier control.",
-    "🚑 Nadie responsable llega aquí.",
-    "🪦 El hígado se ha rendido.",
-    "😵 Esto ya es vergonzoso.",
-    "📊 Has cruzado el ridículo.",
-    "🤡 Esto debería darte vergüenza mañana.",
-    "💀 Diez cervezas. Esto es decadencia.",
-    "🚨 Ya no hay excusa posible.",
-    "🧠 El hígado ha dicho basta.",
-    "📉 Esto ya es una mala versión de ti.",
-    "🤮 Has insistido cuando ya estabas mal.",
-    "🍻 Esto ya no es disfrute.",
-    "☠️ Has tocado fondo real.",
-    "😬 Esto no se defiende.",
-    "📊 Esto ya es un problema serio.",
-    "🪦 Has perdido todo control.",
-    "💀 Esto ya no es gracioso.",
-    "🚑 Esto debería alarmarte.",
-    "🤡 Has quedado retratado.",
-    "📉 Diez o más. Mal final.",
-    "😵 Te has abandonado.",
-    "☠️ Esto ya es indefendible.",
-]
-
-# Fallback para bebidas OTHER (no entran en el contador de "cervezas")
-OTHER_FUN_PHRASES = [
-    "✅ Apuntado.",
-    "📌 Registrado.",
-    "🍻 Hecho.",
-    "😐 Guardado.",
-    "📊 Anotado.",
-]
-
-def pick_private_phrase_for_beer_total(total_beers_today: int) -> str:
-    if total_beers_today <= 1:
-        return random.choice(PRIVATE_LVL1)
-    if 2 <= total_beers_today <= 3:
-        return random.choice(PRIVATE_LVL2)
-    if 4 <= total_beers_today <= 6:
-        return random.choice(PRIVATE_LVL3)
-    if 7 <= total_beers_today <= 9:
-        return random.choice(PRIVATE_LVL4)
-    return random.choice(PRIVATE_LVL5)
-
 
 def build_achievement_messages(person_name: str, year_start: int, qty_added: int, after_units: int, is_first: bool):
     msgs = []
@@ -673,17 +516,161 @@ def build_achievement_messages(person_name: str, year_start: int, qty_added: int
             msgs.append(f"🏅 {person_name} alcanza {m} consumiciones en {year_start}-{year_start+1}.")
     return msgs
 
+
+
+# --------- Avisos públicos (por DM) ---------
+
+PUBLIC_PODIUM_BANK = {
+    "top1": [
+        "bebió como si hubiera algo que demostrar.",
+        "ganó por pura insistencia, no por mérito.",
+        "lideró sin freno y sin vergüenza.",
+        "convirtió el exceso en rutina.",
+        "ganó una carrera que nadie pidió.",
+        "fue constante donde no hacía falta.",
+        "se tomó el periodo como un reto personal.",
+        "hizo del mal hábito una disciplina.",
+    ],
+    "top2": [
+        "empezó con ambición y acabó escondiéndose.",
+        "quiso competir, pero no supo sostenerlo.",
+        "siguió cuando ya era mala idea.",
+        "se desinfló sin dignidad.",
+        "confundió constancia con control.",
+        "estuvo cerca solo para decepcionar mejor.",
+        "hizo ruido al principio y nada al final.",
+    ],
+    "top3": [
+        "insistió cuando ya no quedaba nada que salvar.",
+        "se dejó llevar sin criterio.",
+        "acompañó sin aportar nada bueno.",
+        "empujó cuando ya daba pena.",
+        "no lideró, pero tampoco ayudó.",
+        "estuvo ahí para empeorar el conjunto.",
+    ],
+    "low": [
+        "bebió tan poco que ni sirve de ejemplo.",
+        "aportación mínima, impacto nulo.",
+        "presencia testimonial.",
+        "pasó sin dejar rastro.",
+        "estuvo, pero no influyó.",
+        "irrelevante incluso para comparaciones.",
+        "no destacó ni para bien ni para mal.",
+    ],
+    "start_strong_fall": [
+        "empezó prometiendo y terminó desapareciendo.",
+        "se desinfló rápido y mal.",
+        "arrancó con ganas y acabó pidiendo que no se miraran los datos.",
+        "quemó todo al principio y no sostuvo nada.",
+        "abrió fuerte y cerró escondido.",
+    ],
+    "late": [
+        "llegó tarde y aun así sobraba.",
+        "se incorporó cuando ya no había dignidad.",
+        "apareció solo para estorbar.",
+        "llegó cuando ya daba igual.",
+        "se sumó al final por inercia.",
+    ],
+    "ghost": [
+        "desapareció estratégicamente.",
+        "se ausentó lo suficiente como para no mancharse.",
+        "prefirió no estar cuando tocaba.",
+        "su ausencia fue su mejor decisión.",
+        "no apareció, y nadie lo echó de menos.",
+    ],
+    "fallback": [
+        "no hizo nada digno de mención.",
+        "pasó por aquí sin impacto.",
+        "ocupó espacio sin aportar.",
+        "no ayudó, pero tampoco molestó. Que ya es decir.",
+        "su contribución fue prescindible.",
+    ],
+}
+
+def _pick_unique(choices, used):
+    pool = [c for c in choices if c not in used]
+    if not pool:
+        pool = list(choices)
+    c = random.choice(pool)
+    used.add(c)
+    return c
+
+def _build_public_podium_lines(rows, start_date: dt.date, end_date: dt.date):
+    """
+    rows: output of period_activity_summary(start_date, end_date), includes ALL active persons.
+    Returns list of lines:
+      - Top 3 with heavy humiliation
+      - Then every remaining active person mentioned individually (always), using data-driven categories if possible.
+    """
+    used = set()
+
+    # Defensive: ensure stable ordering
+    rows_sorted = sorted(rows, key=lambda r: (-float(r.get("liters_total") or 0), str(r.get("name") or "")))
+
+    top = rows_sorted[:3]
+    rest = rows_sorted[3:]
+
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    banks = ["top1", "top2", "top3"]
+
+    for i, r in enumerate(top):
+        name = r.get("name") or "??"
+        phrase = _pick_unique(PUBLIC_PODIUM_BANK[banks[i]], used)
+        lines.append(f"{medals[i]} {name} — {phrase}")
+
+    # Heuristics for the rest (always one line per person)
+    low_liters_threshold = 1.0
+
+    # Precompute mid split (same as db helper)
+    days = (end_date - start_date).days + 1
+    mid_days = days // 2
+    mid_date = start_date + dt.timedelta(days=mid_days - 1) if mid_days > 0 else start_date
+
+    for r in rest:
+        name = r.get("name") or "??"
+        liters = float(r.get("liters_total") or 0)
+        active_days = int(r.get("active_days") or 0)
+        first_day = r.get("first_day")
+        last_day = r.get("last_day")
+        first_half = float(r.get("first_half_liters") or 0)
+        last_half = float(r.get("last_half_liters") or 0)
+
+        category = "fallback"
+
+        if liters <= 0 or active_days == 0:
+            category = "ghost"
+        else:
+            # "empezó fuerte y bajó"
+            if first_half >= 1.0 and first_half >= (last_half * 2.0 + 0.01):
+                category = "start_strong_fall"
+            # "llegó tarde"
+            if first_day and isinstance(first_day, dt.date):
+                if first_day >= (end_date - dt.timedelta(days=1)):
+                    category = "late"
+            # "poco consumo"
+            if category == "fallback" and liters < low_liters_threshold:
+                category = "low"
+
+        phrase = _pick_unique(PUBLIC_PODIUM_BANK[category], used)
+        lines.append(f"• {name} — {phrase}")
+
+    return lines
+
 # --------- Resumen mensual automático (día 1) ---------
+
 
 async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
     now = dt.datetime.now(TZ)
     if now.day != 1:
         return
 
-    # Resumen del mes anterior
+    # Resumen del mes anterior (calendario real)
     first_of_this_month = dt.date(now.year, now.month, 1)
     prev_month_last_day = first_of_this_month - dt.timedelta(days=1)
     y, m = prev_month_last_day.year, prev_month_last_day.month
+    start_date = dt.date(y, m, 1)
+    end_date = prev_month_last_day
 
     if monthly_summary_already_sent(y, m):
         return
@@ -692,33 +679,76 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
     if not mark_monthly_summary_sent(y, m):
         return
 
-    rows = month_summary(y, m)
+    rows = period_activity_summary(start_date, end_date)
 
-    total_units = sum(int(r["unidades"]) for r in rows)
-    total_liters = sum(float(r["litros"]) for r in rows)
-    total_euros = sum(float(r["euros"]) for r in rows)
+    total_units = sum(int(r.get("units_total") or 0) for r in rows)
+    total_liters = sum(float(r.get("liters_total") or 0) for r in rows)
+    total_euros = sum(float(r.get("euros_total") or 0) for r in rows)
+
+    # Campeón por litros
+    champ = max(rows, key=lambda r: float(r.get("liters_total") or 0), default=None)
+    champ_name = champ.get("name") if champ else "Nadie"
+    champ_liters = float(champ.get("liters_total") or 0) if champ else 0.0
 
     month_name = dt.date(y, m, 1).strftime("%B").capitalize()
-    lines = [f"📅 Resumen {month_name} {y}", ""]
-    lines.append(f"🍺 Total: {total_units} consumiciones")
-    lines.append(f"📏 Litros: {total_liters:.2f} L")
-    lines.append(f"💸 Gasto: {total_euros:.2f} €")
-    lines.append("")
-    lines.append("🏆 Top del mes:")
 
-    # Top 3 por euros (ya viene ordenado)
-    top = [r for r in rows if int(r["unidades"]) > 0][:3]
-    if not top:
-        lines.append("• Nadie ha apuntado nada este mes 😇")
-    else:
-        for i, r in enumerate(top, 1):
-            lines.append(
-                f"• {i}º {r['name']} — {int(r['unidades'])} uds | {float(r['litros']):.2f} L | {float(r['euros']):.2f} €"
-            )
+    # Ranking compacto
+    ranking_parts = [f"{r['name']} {float(r.get('liters_total') or 0):.1f}" for r in rows]
+    ranking_line = " · ".join(ranking_parts)
+
+    # Bebida top del mes
+    drink_rows = range_drinks_totals(start_date, end_date)
+    top_drink_line = None
+    if drink_rows:
+        d0 = drink_rows[0]
+        top_drink_line = f"{d0['name']} ({float(d0.get('liters') or 0):.2f} L)"
+
+    # Vergüenzas (mensual) — compactas
+    shame_lines = []
+    try:
+        shame = monthly_shame_report(y, m)
+    except Exception:
+        shame = None
+
+    active_people = sum(1 for r in rows if float(r.get("liters_total") or 0) > 0)
+
+    if shame and active_people >= 2:
+        fl = shame.get("false_leader")
+        if fl:
+            d = fl.get("first_day")
+            d_txt = d.strftime("%d/%m") if d else ""
+            shame_lines.append(f"🪦 Falso líder: {fl['name']} lideró ({d_txt}) y acabó {fl['final_rank']}º.")
+        gh = shame.get("ghost")
+        if gh:
+            shame_lines.append(f"😴 Fantasma: {gh['name']} desapareció {gh['blank_days']} de {gh['days']} días.")
+        ac = shame.get("almost_champion")
+        if ac and ac.get("times", 0) > 0:
+            shame_lines.append(f"🫠 Casi campeón: {ac['name']} se quedó a <0,5 L del liderato {ac['times']} veces.")
+
+    # Podio + humillación individual para TODOS
+    podium_lines = _build_public_podium_lines(rows, start_date, end_date)
+
+    lines = [
+        f"📅 Resumen mensual ({month_name} {y})",
+        "",
+        f"🧴 Grupo: {total_liters:.2f} L · 🍺 {total_units} · 💸 {total_euros:.2f} €",
+        f"🥇 Campeón: {champ_name} ({champ_liters:.2f} L)",
+        "",
+        "🏆 Ranking (L):",
+        ranking_line if ranking_line else "—",
+    ]
+
+    if top_drink_line:
+        lines += ["", f"🍺 Bebida del mes: {top_drink_line}"]
+
+    if shame_lines:
+        lines += ["", "🤡 Vergüenzas:", *shame_lines]
+
+    lines += ["", "🧨 Podio del despropósito:", *podium_lines, "", "🧾 Veredicto: buen mes para los números. Malo para vuestra reputación."]
 
     msg = "\n".join(lines)
 
-    # Enviar a todos los usuarios activos
+    # Enviar a todos los usuarios activos (por DM)
     bot = context.bot
     for chat_id in list_active_telegram_user_ids():
         try:
@@ -726,63 +756,135 @@ async def monthly_summary_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # --- Estadísticas vergonzosas (mensaje aparte, público) ---
-    # (IMPORTANTE: esto va DENTRO del async def)
-    try:
-        shame = monthly_shame_report(y, m)
-    except Exception:
-        shame = None
 
-    # Regla: mínimo 2 personas con consumo en el mes
 
-    active_people = sum(1 for r in rows if int(r["unidades"]) > 0)
+# --------- Resumen semanal automático (lunes) ---------
 
-    if shame and active_people >= 2:
-        month_name2 = dt.date(y, m, 1).strftime("%B").capitalize()
-        lines2 = [f"🤡 Estadísticas vergonzosas — {month_name2} {y}", ""]
+async def weekly_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    now = dt.datetime.now(TZ)
+    # Lunes
+    if now.weekday() != 0:
+        return
 
-        fl = shame.get("false_leader")
-        if fl:
-            d = fl.get("first_day")
-            d_txt = d.strftime("%d/%m") if d else ""
-            lines2.append("🪦 Falso líder del mes")
-            lines2.append(f"• {fl['name']} lideró ({d_txt}) y acabó {fl['final_rank']}º.")
-            lines2.append("")
+    today = now.date()
+    # Semana anterior (lunes-domingo)
+    start_date = today - dt.timedelta(days=today.weekday() + 7)
+    end_date = start_date + dt.timedelta(days=6)
 
-        bd = shame.get("biggest_drop")
-        if bd and bd.get("drop", 0) > 0:
-            lines2.append("📉 Mayor caída del mes")
-            lines2.append(f"• {bd['name']} pasó de {bd['best_rank']}º a {bd['final_rank']}º.")
-            lines2.append("")
+    iso = start_date.isocalendar()
+    year, week = int(iso.year), int(iso.week)
 
-        ac = shame.get("almost_champion")
-        if ac and ac.get("times", 0) > 0:
-            lines2.append("🫠 El casi campeón")
-            lines2.append(f"• {ac['name']} se quedó a < 0,5 L del liderato {ac['times']} veces.")
-            lines2.append("")
+    if weekly_summary_already_sent(year, week):
+        return
+    if not mark_weekly_summary_sent(year, week):
+        return
 
-        gh = shame.get("ghost")
-        if gh:
-            lines2.append("😴 Fantasma del mes")
-            lines2.append(f"• {gh['name']} desapareció {gh['blank_days']} de {gh['days']} días.")
-            lines2.append("")
+    rows = period_activity_summary(start_date, end_date)
 
-        sw = shame.get("saddest_week")
-        if sw:
-            ws = sw["week_start"]
-            we = ws + dt.timedelta(days=6)
-            lines2.append("🧊 Semana más triste")
-            lines2.append(f"• {ws.strftime('%d/%m')}–{we.strftime('%d/%m')}: {sw['liters']:.2f} L.")
-            lines2.append("")
+    total_units = sum(int(r.get("units_total") or 0) for r in rows)
+    total_liters = sum(float(r.get("liters_total") or 0) for r in rows)
+    # Campeón por litros
+    champ = max(rows, key=lambda r: float(r.get("liters_total") or 0), default=None)
+    champ_name = champ.get("name") if champ else "Nadie"
+    champ_liters = float(champ.get("liters_total") or 0) if champ else 0.0
 
-        if len(lines2) > 2:
-            msg2 = "\n".join(lines2).rstrip()
-            for chat_id in list_active_telegram_user_ids():
-                try:
-                    await bot.send_message(chat_id=chat_id, text=msg2)
-                except Exception:
-                    pass
-# --------- Handlers ---------
+    ranking_parts = [f"{r['name']} {float(r.get('liters_total') or 0):.1f}" for r in rows]
+    ranking_line = " · ".join(ranking_parts)
+
+    drink_rows = range_drinks_totals(start_date, end_date)
+    top_drink_line = None
+    if drink_rows:
+        d0 = drink_rows[0]
+        top_drink_line = f"{d0['name']} ({float(d0.get('liters') or 0):.2f} L)"
+
+    podium_lines = _build_public_podium_lines(rows, start_date, end_date)
+
+    lines = [
+        f"📅 Resumen semanal ({start_date.strftime('%d/%m')}–{end_date.strftime('%d/%m')})",
+        "",
+        f"🧴 Grupo: {total_liters:.2f} L · 🍺 {total_units}",
+        f"🥇 Campeón: {champ_name} ({champ_liters:.2f} L)",
+        "",
+        "🏆 Ranking (L):",
+        ranking_line if ranking_line else "—",
+    ]
+    if top_drink_line:
+        lines += ["", f"🍺 Bebida top: {top_drink_line}"]
+
+    lines += ["", "🧨 Podio del despropósito:", *podium_lines, "", "🧾 Veredicto: siete días. Y aun así, nadie aprendió nada."]
+
+    msg = "\n".join(lines)
+
+    bot = context.bot
+    for chat_id in list_active_telegram_user_ids():
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg)
+        except Exception:
+            pass
+
+# --------- Cierre del año cervecero (6 enero) ---------
+
+async def beer_year_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    now = dt.datetime.now(TZ)
+    # Lo enviamos el 7 de enero por la mañana
+    if not (now.month == 1 and now.day == 7):
+        return
+
+    # Año cervecero que acaba el 6 de enero del año actual
+    year_start = now.year - 1
+    if beer_year_summary_already_sent(year_start):
+        return
+    if not mark_beer_year_summary_sent(year_start):
+        return
+
+    start_date = dt.date(year_start, 1, 7)
+    end_date = dt.date(year_start + 1, 1, 6)
+
+    rows = period_activity_summary(start_date, end_date)
+
+    total_units = sum(int(r.get("units_total") or 0) for r in rows)
+    total_liters = sum(float(r.get("liters_total") or 0) for r in rows)
+    total_euros = sum(float(r.get("euros_total") or 0) for r in rows)
+
+    champ = max(rows, key=lambda r: float(r.get("liters_total") or 0), default=None)
+    champ_name = champ.get("name") if champ else "Nadie"
+    champ_liters = float(champ.get("liters_total") or 0) if champ else 0.0
+
+    ranking_parts = [f"{r['name']} {float(r.get('liters_total') or 0):.1f}" for r in rows]
+    ranking_line = " · ".join(ranking_parts)
+
+    # Bebidas del año (top 3)
+    drink_rows = year_drinks_totals(year_start)
+    top3_drinks = drink_rows[:3] if drink_rows else []
+    drinks_lines = []
+    if top3_drinks:
+        for i, d in enumerate(top3_drinks, 1):
+            drinks_lines.append(f"{i}) {d['name']} {float(d.get('liters') or 0):.2f} L")
+
+    podium_lines = _build_public_podium_lines(rows, start_date, end_date)
+
+    lines = [
+        f"🏁 Cierre del año cervecero {year_start}-{year_start+1} (07/01/{year_start}–06/01/{year_start+1})",
+        "",
+        f"🧴 Grupo: {total_liters:.2f} L · 🍺 {total_units} · 💸 {total_euros:.2f} €",
+        f"🥇 Campeón anual: {champ_name} ({champ_liters:.2f} L)",
+        "",
+        "🏆 Ranking anual (L):",
+        ranking_line if ranking_line else "—",
+    ]
+    if drinks_lines:
+        lines += ["", "🍺 Bebidas del año (top 3):", *drinks_lines]
+
+    lines += ["", "🧨 Podio del despropósito:", *podium_lines, "", "🧾 Cierre: año cerrado. El hígado no, pero el año sí."]
+
+    msg = "\n".join(lines)
+
+    bot = context.bot
+    for chat_id in list_active_telegram_user_ids():
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg)
+        except Exception:
+            pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
@@ -1518,15 +1620,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Mensaje principal (bonito)
         when = consumed_at.strftime("%d/%m/%Y")
-
-        t = get_drink_type(int(sdata["drink_type_id"]))
-        if t and t.get("category") == "BEER":
-            total_beers = get_person_beer_units_in_notice_window(person["id"], dt.datetime.now(TZ), reset_hour=NOTICE_RESET_HOUR)
-            phrase = pick_private_phrase_for_beer_total(int(total_beers))
-        else:
-            phrase = random.choice(OTHER_FUN_PHRASES)
-
-        base_msg = phrase + f"\n\n✅ Apuntado ({when})."
+        base_msg = random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when})."
         await q.edit_message_text(base_msg, reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
@@ -1612,15 +1706,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         when = consumed_at.strftime("%d/%m/%Y")
-
-        t = get_drink_type(int(sdata["drink_type_id"]))
-        if t and t.get("category") == "BEER":
-            total_beers = get_person_beer_units_in_notice_window(person["id"], dt.datetime.now(TZ), reset_hour=NOTICE_RESET_HOUR)
-            phrase = pick_private_phrase_for_beer_total(int(total_beers))
-        else:
-            phrase = random.choice(OTHER_FUN_PHRASES)
-
-        await update.message.reply_text(phrase + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
+        await update.message.reply_text(random.choice(FUN_PHRASES) + f"\n\n✅ Apuntado ({when}).", reply_markup=menu_kb(is_admin(tg_id)))
         set_state(context, "MENU", {})
 
         # Logros
@@ -1718,6 +1804,20 @@ def main():
         monthly_summary_job,
         time=dt.time(hour=9, minute=0, tzinfo=TZ),
         name="monthly_summary_daily_check",
+    )
+
+    # JobQueue: resumen semanal (lunes) — se ejecuta a diario y el handler filtra el lunes
+    app.job_queue.run_daily(
+        weekly_summary_job,
+        time=dt.time(hour=9, minute=5, tzinfo=TZ),
+        name="weekly_summary_daily_check",
+    )
+
+    # JobQueue: cierre año cervecero (7 enero) — se ejecuta a diario y el handler filtra el día
+    app.job_queue.run_daily(
+        beer_year_summary_job,
+        time=dt.time(hour=9, minute=15, tzinfo=TZ),
+        name="beer_year_summary_daily_check",
     )
 
     app.add_handler(CommandHandler("start", start))

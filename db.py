@@ -136,6 +136,27 @@ def init_db():
             );
             """)
 
+
+            # CONTROL DE ENVÍO DE RESUMEN SEMANAL (para no duplicar)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_summaries_sent (
+  id SERIAL PRIMARY KEY,
+  year INT NOT NULL,
+  week INT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(year, week)
+);
+""")
+
+            # CONTROL DE ENVÍO DE CIERRE DE AÑO CERVECERO (para no duplicar)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS beer_year_summaries_sent (
+  id SERIAL PRIMARY KEY,
+  year_start INT NOT NULL UNIQUE,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+""")
+
             conn.commit()
 
         # Seed personas
@@ -281,7 +302,7 @@ def get_drink_type(drink_type_id: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            SELECT id, label, category, volume_liters, unit_price_eur
+            SELECT id, label, volume_liters, unit_price_eur
             FROM drink_types
             WHERE id=%s;
             """, (drink_type_id,))
@@ -322,49 +343,6 @@ def list_last_events(person_id: int, limit: int = 5):
             LIMIT %s;
             """, (person_id, limit))
             return cur.fetchall()
-
-
-
-
-def get_person_beer_units_in_notice_window(person_id: int, now_ts: dt.datetime, reset_hour: int = 9) -> int:
-    """Total de 'cervezas' (unidades) para avisos, con reset diario a las {reset_hour}:00.
-
-    Regla:
-    - Para avisos, el 'día' empieza a las reset_hour:00 (hora local del timestamp).
-    - Todo lo registrado entre 00:00 y reset_hour-1:59 cuenta como el día anterior.
-    Cuenta solo eventos:
-    - no anulados
-    - categoría BEER
-    - created_at dentro de [start_ts, end_ts)
-    """
-    if not isinstance(now_ts, dt.datetime):
-        raise TypeError("now_ts debe ser datetime")
-
-    # Si viene sin tzinfo, lo tratamos como 'local naive'
-    tz = now_ts.tzinfo
-    local_date = now_ts.date()
-    if now_ts.hour < reset_hour:
-        local_date = local_date - dt.timedelta(days=1)
-
-    start_ts = dt.datetime.combine(local_date, dt.time(reset_hour, 0, 0))
-    if tz is not None:
-        start_ts = start_ts.replace(tzinfo=tz)
-    end_ts = start_ts + dt.timedelta(days=1)
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-            SELECT COALESCE(SUM(e.quantity), 0) AS unidades
-            FROM drink_events e
-            JOIN drink_types dt ON dt.id = e.drink_type_id
-            WHERE e.person_id=%s
-              AND e.is_void=FALSE
-              AND dt.category='BEER'
-              AND e.created_at >= %s
-              AND e.created_at < %s;
-            """, (person_id, start_ts, end_ts))
-            row = cur.fetchone()
-            return int(row["unidades"] or 0)
 
 
 
@@ -535,6 +513,48 @@ def mark_monthly_summary_sent(year: int, month: int) -> bool:
             VALUES (%s,%s)
             ON CONFLICT (year, month) DO NOTHING;
             """, (year, month))
+            conn.commit()
+            return cur.rowcount > 0
+
+
+
+def weekly_summary_already_sent(year: int, week: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM weekly_summaries_sent WHERE year=%s AND week=%s LIMIT 1;",
+                (year, week),
+            )
+            return cur.fetchone() is not None
+
+def mark_weekly_summary_sent(year: int, week: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO weekly_summaries_sent(year, week)
+            VALUES (%s,%s)
+            ON CONFLICT (year, week) DO NOTHING;
+            """, (year, week))
+            conn.commit()
+            return cur.rowcount > 0
+
+def beer_year_summary_already_sent(year_start: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM beer_year_summaries_sent WHERE year_start=%s LIMIT 1;",
+                (year_start,),
+            )
+            return cur.fetchone() is not None
+
+def mark_beer_year_summary_sent(year_start: int) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO beer_year_summaries_sent(year_start)
+            VALUES (%s)
+            ON CONFLICT (year_start) DO NOTHING;
+            """, (year_start,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -1137,6 +1157,78 @@ def user_stats_range(start_date: dt.date, end_date: dt.date):
             "peak_liters": float(r["peak_liters"] or 0),
         })
     return out
+
+
+def period_activity_summary(start_date: dt.date, end_date: dt.date):
+    """
+    For ALL ACTIVE persons, returns one row each with:
+      - liters_total, units_total, euros_total
+      - active_days, first_day, last_day
+      - first_half_liters, last_half_liters (for "empezó fuerte y bajó")
+    Uses consumed_at (calendar) ranges: start_date..end_date inclusive.
+    """
+    days = (end_date - start_date).days + 1
+    mid_days = days // 2
+    mid_date = start_date + dt.timedelta(days=mid_days - 1) if mid_days > 0 else start_date
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            WITH per_person AS (
+              SELECT
+                p.id AS person_id,
+                p.name AS name,
+                COALESCE(SUM(e.quantity), 0) AS units_total,
+                COALESCE(SUM(e.volume_liters_total), 0) AS liters_total,
+                COALESCE(SUM(e.price_eur_total), 0) AS euros_total,
+                COUNT(DISTINCT e.consumed_at) AS active_days,
+                MIN(e.consumed_at) AS first_day,
+                MAX(e.consumed_at) AS last_day,
+                COALESCE(SUM(CASE WHEN e.consumed_at <= %s THEN e.volume_liters_total ELSE 0 END), 0) AS first_half_liters,
+                COALESCE(SUM(CASE WHEN e.consumed_at > %s THEN e.volume_liters_total ELSE 0 END), 0) AS last_half_liters
+              FROM persons p
+              LEFT JOIN drink_events e
+                ON e.person_id = p.id
+               AND e.is_void = FALSE
+               AND e.consumed_at BETWEEN %s AND %s
+              WHERE p.status = 'ACTIVE'
+              GROUP BY p.id, p.name
+            )
+            SELECT *
+            FROM per_person
+            ORDER BY liters_total DESC, name ASC;
+            """, (mid_date, mid_date, start_date, end_date))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in rows]
+
+def range_drinks_totals(start_date: dt.date, end_date: dt.date):
+    """
+    Totals per drink type for a calendar range (consumed_at).
+    Returns list sorted by liters desc.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            SELECT
+              dt.code,
+              dt.name,
+              SUM(e.quantity) AS units,
+              SUM(COALESCE(e.volume_liters_total, 0)) AS liters
+            FROM drink_events e
+            JOIN drink_types dt ON dt.code = e.drink_type
+            JOIN persons p ON p.id = e.person_id
+            WHERE e.is_void = FALSE
+              AND p.status = 'ACTIVE'
+              AND e.consumed_at BETWEEN %s AND %s
+            GROUP BY dt.code, dt.name
+            HAVING SUM(COALESCE(e.volume_liters_total, 0)) > 0 OR SUM(e.quantity) > 0
+            ORDER BY liters DESC, units DESC, dt.name ASC;
+            """, (start_date, end_date))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in rows]
+
 
 def user_year_stats(year: int):
     """
